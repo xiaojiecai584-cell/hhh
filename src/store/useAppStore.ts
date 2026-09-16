@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type TabId = 'connect' | 'body' | 'motion' | 'demo' | 'report'
+export type TabId = 'connect' | 'body' | 'motion' | 'demo' | 'report' | 'data'
 
 interface AppState {
   tab: TabId

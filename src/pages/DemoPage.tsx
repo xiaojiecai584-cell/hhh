@@ -5,19 +5,22 @@ import { useBleStore } from '../store/useBleStore'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
 import { useCustomMotionStore } from '../store/useCustomMotionStore'
 import { sampleAngles } from '../core/motion/engine'
-import { AXIS_LABELS, type JointAngles } from '../core/motion/types'
+import { AXIS_LABELS, SPEED_LABELS, type JointAngles, type SpeedProfile } from '../core/motion/types'
 import { templateToImuTarget } from '../core/motion/imuMapping'
 import HumanViewport from '../components/HumanViewport'
 import AngleCurve, { type AngleCurveHandle } from '../components/AngleCurve'
 
 const SPEEDS = [0.5, 1, 1.5, 2]
+const SPEED_OPTIONS = Object.entries(SPEED_LABELS) as [SpeedProfile, string][]
 
 export default function DemoPage() {
   const templateId = useMotionStore((s) => s.templateId)
   const playing = useMotionStore((s) => s.playing)
   const loop = useMotionStore((s) => s.loop)
   const speed = useMotionStore((s) => s.speed)
+  const speedProfile = useMotionStore((s) => s.speedProfile)
   const setTemplateId = useMotionStore((s) => s.setTemplateId)
+  const setSpeedProfile = useMotionStore((s) => s.setSpeedProfile)
   const setPlaying = useMotionStore((s) => s.setPlaying)
   const setLoop = useMotionStore((s) => s.setLoop)
   const setSpeed = useMotionStore((s) => s.setSpeed)
@@ -37,9 +40,10 @@ export default function DemoPage() {
   // 切换动作时复位
   useEffect(() => {
     progressRef.current = 0
-    poseRef.current = sampleAngles(template, 0)
+    setSpeedProfile(template.speedProfile)
+    poseRef.current = sampleAngles(template, 0, template.speedProfile)
     curveRef.current?.setCursor(0)
-  }, [template])
+  }, [template, setSpeedProfile])
 
   // 播放推进
   useEffect(() => {
@@ -58,18 +62,18 @@ export default function DemoPage() {
           setPlaying(false)
         }
       }
-      poseRef.current = sampleAngles(template, progressRef.current)
+      poseRef.current = sampleAngles(template, progressRef.current, speedProfile)
       curveRef.current?.setCursor(progressRef.current)
       raf = requestAnimationFrame(step)
     }
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
-  }, [playing, loop, speed, template, setPlaying])
+  }, [playing, loop, speed, template, setPlaying, speedProfile])
 
   const togglePlay = () => {
     if (!playing && progressRef.current >= 1) {
       progressRef.current = 0
-      poseRef.current = sampleAngles(template, 0)
+      poseRef.current = sampleAngles(template, 0, speedProfile)
       curveRef.current?.setCursor(0)
     }
     setPlaying(!playing)
@@ -79,7 +83,7 @@ export default function DemoPage() {
     if (sendingRef.current) return
     sendingRef.current = true
     try {
-      await sendStartAction(templateToImuTarget(template), `开始·${template.name}`)
+      await sendStartAction(templateToImuTarget(template, speedProfile), `开始·${template.name}`)
     } finally {
       sendingRef.current = false
     }
@@ -147,6 +151,22 @@ export default function DemoPage() {
                 onClick={() => setSpeed(s)}
               >
                 {s}×
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <span className="muted" style={{ fontSize: 12 }}>
+            速度模式
+          </span>
+          <div className="seg" style={{ flex: 1 }}>
+            {SPEED_OPTIONS.map(([v, label]) => (
+              <button
+                key={v}
+                className={`seg__btn${speedProfile === v ? ' seg__btn--active' : ''}`}
+                onClick={() => setSpeedProfile(v)}
+              >
+                {label}
               </button>
             ))}
           </div>

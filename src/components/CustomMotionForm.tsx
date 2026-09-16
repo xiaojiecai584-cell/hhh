@@ -8,17 +8,20 @@ import {
   AXIS_LABELS,
   POSTURE_LABELS,
   SENSOR_LABELS,
+  SPEED_LABELS,
   type BasePosture,
   type JointAngles,
   type MainAxis,
   type MotionTemplate,
   type SensorPosition,
+  type SpeedProfile,
 } from '../core/motion/types'
 import { recommendSensor } from '../core/motion/kinematics'
 import { httpMotionGenerator, type GeneratedDraft } from '../core/analysis/motionGenerator'
 
 const SENSOR_OPTIONS = Object.entries(SENSOR_LABELS) as [SensorPosition, string][]
 const POSTURE_OPTIONS = Object.entries(POSTURE_LABELS) as [BasePosture, string][]
+const SPEED_OPTIONS = Object.entries(SPEED_LABELS) as [SpeedProfile, string][]
 
 const AXIS_BY_SENSOR: Record<SensorPosition, MainAxis[]> = {
   wrist: [1, 2, 3],
@@ -28,6 +31,7 @@ const AXIS_BY_SENSOR: Record<SensorPosition, MainAxis[]> = {
 }
 
 const ANGLE_KEYS: { key: keyof JointAngles; label: string }[] = [
+  { key: 'torsoFlexion', label: '躯干屈' },
   { key: 'shoulderFlexion', label: '肩屈' },
   { key: 'shoulderAbduction', label: '肩外展' },
   { key: 'elbowFlexion', label: '肘屈' },
@@ -44,6 +48,7 @@ const KF_ROWS = [
 type KfKey = (typeof KF_ROWS)[number]['key']
 
 const ZERO: JointAngles = {
+  torsoFlexion: 0,
   shoulderFlexion: 0,
   shoulderAbduction: 0,
   elbowFlexion: 0,
@@ -55,8 +60,8 @@ const ZERO: JointAngles = {
 function relevantKeys(sensor: SensorPosition, posture: BasePosture): (keyof JointAngles)[] {
   const lower = sensor === 'thigh' || sensor === 'shin'
   const base: (keyof JointAngles)[] = lower
-    ? ['hipFlexion', 'kneeFlexion']
-    : ['shoulderFlexion', 'shoulderAbduction', 'elbowFlexion']
+    ? ['torsoFlexion', 'hipFlexion', 'kneeFlexion']
+    : ['torsoFlexion', 'shoulderFlexion', 'shoulderAbduction', 'elbowFlexion']
   // 坐姿时额外展示髋/膝（作为基准姿态关节）
   if (posture === 'seated' && !lower) return [...base, 'hipFlexion', 'kneeFlexion']
   return base
@@ -80,6 +85,7 @@ interface Draft {
   mainAxis: MainAxis
   sensorPosition: SensorPosition
   basePosture: BasePosture
+  speedProfile: SpeedProfile
   peakAngleDeg: number
   wristToleranceDeg: number
   cadence: number
@@ -96,6 +102,7 @@ function makeDraft(sensor: SensorPosition = 'wrist', posture: BasePosture = 'sta
     mainAxis: d.mainAxis,
     sensorPosition: sensor,
     basePosture: posture,
+    speedProfile: 'variable',
     peakAngleDeg: 90,
     wristToleranceDeg: 15,
     cadence: 30,
@@ -167,6 +174,7 @@ export default function CustomMotionForm() {
       mainAxis: draft.mainAxis,
       sensorPosition: draft.sensorPosition,
       basePosture: draft.basePosture,
+      speedProfile: draft.speedProfile,
       peakAngleDeg: draft.peakAngleDeg,
       wristToleranceDeg: draft.wristToleranceDeg,
       cadence: draft.cadence,
@@ -192,6 +200,7 @@ export default function CustomMotionForm() {
       mainAxis: d.mainAxis,
       sensorPosition: d.sensorPosition,
       basePosture: d.basePosture,
+      speedProfile: d.speedProfile,
       peakAngleDeg: d.peakAngleDeg,
       wristToleranceDeg: d.wristToleranceDeg,
       cadence: d.cadence,
@@ -318,6 +327,25 @@ export default function CustomMotionForm() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="field" style={{ marginTop: 12 }}>
+        <span className="field__label">速度模式</span>
+        <div className="seg">
+          {SPEED_OPTIONS.map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              className={`seg__btn${draft.speedProfile === v ? ' seg__btn--active' : ''}`}
+              onClick={() => setKey('speedProfile', v)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+          匀速：角速度恒定；非匀速：起停缓、中间快（正弦速度曲线）。
+        </p>
       </div>
 
       <div className="field-grid" style={{ marginTop: 12 }}>

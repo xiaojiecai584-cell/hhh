@@ -1,6 +1,7 @@
-import type { JointAngles, MotionTemplate } from './types'
+import type { JointAngles, MotionTemplate, SpeedProfile } from './types'
 
 const ZERO: JointAngles = {
+  torsoFlexion: 0,
   shoulderFlexion: 0,
   shoulderAbduction: 0,
   elbowFlexion: 0,
@@ -13,7 +14,7 @@ function lerp(a: number, b: number, u: number) {
 }
 
 /** 在归一化时间 t（0..1）采样动作，得到当前关节角 */
-export function sampleAngles(tmpl: MotionTemplate, t: number): JointAngles {
+export function sampleAngles(tmpl: MotionTemplate, t: number, speedProfile?: SpeedProfile): JointAngles {
   const kf = tmpl.keyframes
   if (kf.length === 0) return { ...ZERO }
   const tc = Math.max(0, Math.min(1, t))
@@ -24,8 +25,9 @@ export function sampleAngles(tmpl: MotionTemplate, t: number): JointAngles {
     if (tc >= a.t && tc <= b.t) {
       const span = b.t - a.t || 1
       let u = (tc - a.t) / span
-      if (b.easing === 'smoothstep') u = u * u * (3 - 2 * u)
+      if ((speedProfile ?? tmpl.speedProfile) !== 'uniform') u = u * u * (3 - 2 * u)
       return {
+        torsoFlexion: lerp(a.angles.torsoFlexion, b.angles.torsoFlexion, u),
         shoulderFlexion: lerp(a.angles.shoulderFlexion, b.angles.shoulderFlexion, u),
         shoulderAbduction: lerp(a.angles.shoulderAbduction, b.angles.shoulderAbduction, u),
         elbowFlexion: lerp(a.angles.elbowFlexion, b.angles.elbowFlexion, u),

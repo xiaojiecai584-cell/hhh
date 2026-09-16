@@ -9,6 +9,7 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     mainAxis: 1,
     sensorPosition: 'wrist',
     basePosture: 'seated',
+    speedProfile: 'variable',
     peakAngleDeg: 180,
     wristToleranceDeg: 15,
     cadence: 30,
@@ -16,17 +17,17 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     keyframes: [
       {
         t: 0,
-        angles: { shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 90, hipFlexion: 90, kneeFlexion: 90 },
+        angles: { torsoFlexion: 0, shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 90, hipFlexion: 90, kneeFlexion: 90 },
         easing: 'smoothstep',
       },
       {
         t: 0.5,
-        angles: { shoulderFlexion: 180, shoulderAbduction: 0, elbowFlexion: 5, hipFlexion: 90, kneeFlexion: 90 },
+        angles: { torsoFlexion: 0, shoulderFlexion: 180, shoulderAbduction: 0, elbowFlexion: 5, hipFlexion: 90, kneeFlexion: 90 },
         easing: 'smoothstep',
       },
       {
         t: 1,
-        angles: { shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 90, hipFlexion: 90, kneeFlexion: 90 },
+        angles: { torsoFlexion: 0, shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 90, hipFlexion: 90, kneeFlexion: 90 },
         easing: 'smoothstep',
       },
     ],
@@ -39,6 +40,7 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     mainAxis: 2,
     sensorPosition: 'wrist',
     basePosture: 'standing',
+    speedProfile: 'variable',
     peakAngleDeg: 90,
     wristToleranceDeg: 15,
     cadence: 30,
@@ -46,17 +48,17 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     keyframes: [
       {
         t: 0,
-        angles: { shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 15, hipFlexion: 0, kneeFlexion: 0 },
+        angles: { torsoFlexion: 0, shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 15, hipFlexion: 0, kneeFlexion: 0 },
         easing: 'smoothstep',
       },
       {
         t: 0.5,
-        angles: { shoulderFlexion: 0, shoulderAbduction: 90, elbowFlexion: 15, hipFlexion: 0, kneeFlexion: 0 },
+        angles: { torsoFlexion: 0, shoulderFlexion: 0, shoulderAbduction: 90, elbowFlexion: 15, hipFlexion: 0, kneeFlexion: 0 },
         easing: 'smoothstep',
       },
       {
         t: 1,
-        angles: { shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 15, hipFlexion: 0, kneeFlexion: 0 },
+        angles: { torsoFlexion: 0, shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 15, hipFlexion: 0, kneeFlexion: 0 },
         easing: 'smoothstep',
       },
     ],

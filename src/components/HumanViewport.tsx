@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { createBench, createHumanoid, createImuAxes, type HumanoidJoints } from '../three/humanoid'
-import { resolveSegments, type BodyProfile } from '../core/body/bodyProfile'
+import { resolveSegments, type BodyProfile, type ResolvedSegments } from '../core/body/bodyProfile'
 import { applyPose } from '../core/motion/pose'
 import type { BasePosture, JointAngles, SensorPosition } from '../core/motion/types'
 
@@ -30,6 +30,24 @@ function sensorJoint(joints: HumanoidJoints, sensor: SensorPosition): THREE.Obje
       return joints.kneeR
     default:
       return joints.ankleR
+  }
+}
+
+/** 俯卧撑/平板的地面接触解算：手贴地、脚尖贴地，身体随肘屈升降 */
+function computePronePose(seg: ResolvedSegments, elbowDeg: number) {
+  const armLen = seg.upperArmLen + seg.forearmLen
+  const effArm = seg.upperArmLen + seg.forearmLen * Math.cos((elbowDeg * Math.PI) / 180)
+  const bodyLen = seg.torsoLen + seg.thighLen + seg.shinLen
+  const pitch = Math.asin(Math.min(1, armLen / bodyLen))
+  const e = new THREE.Euler(Math.PI / 2 - pitch, 0, 0, 'XYZ')
+  const up = new THREE.Vector3(0, 1, 0).applyEuler(e)
+  const fwd = new THREE.Vector3(0, 0, 1).applyEuler(e)
+  const shoulder = up.clone().multiplyScalar(seg.torsoLen)
+  const hand = fwd.clone().multiplyScalar(effArm)
+  return {
+    rotationX: e.x,
+    positionY: -(shoulder.y + hand.y) + 0.05,
+    ankleX: pitch - Math.PI / 2,
   }
 }
 
@@ -85,8 +103,11 @@ export default function HumanViewport({
       humanoid.group.position.y = seg.shinLen + 0.02
       scene.add(createBench(seg))
     } else if (posture === 'prone') {
-      humanoid.group.rotation.x = Math.PI / 2
-      humanoid.group.position.y = seg.upperArmLen + seg.forearmLen + 0.12
+      const p = computePronePose(seg, 0)
+      humanoid.group.rotation.x = p.rotationX
+      humanoid.group.position.y = p.positionY
+      humanoid.joints.ankleL.rotation.x = p.ankleX
+      humanoid.joints.ankleR.rotation.x = p.ankleX
     } else if (posture === 'supine') {
       humanoid.group.rotation.x = -Math.PI / 2
       humanoid.group.position.y = seg.shoulderWidth * 0.3
@@ -135,9 +156,9 @@ export default function HumanViewport({
         applyPose(humanoid.joints, pose)
         const rad = Math.PI / 180
         if (posture === 'prone') {
-          // 地面支撑（俯卧）：手贴地，身体随肘屈升降
-          const elbow = pose.elbowFlexion * rad
-          humanoid.group.position.y = seg.upperArmLen + seg.forearmLen * Math.cos(elbow) + 0.12
+          // 地面支撑（俯卧撑/平板）：手贴地、脚尖贴地，身体随肘屈升降
+          const p = computePronePose(seg, pose.elbowFlexion)
+          humanoid.group.position.y = p.positionY
         } else if (posture === 'standing') {
           // 站立：脚贴地，身体随髋屈/膝屈升降（深蹲等下肢动作）
           const hip = pose.hipFlexion * rad

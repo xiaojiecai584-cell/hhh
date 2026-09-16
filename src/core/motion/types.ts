@@ -1,6 +1,7 @@
 // 动作引擎共享类型
 
 export interface JointAngles {
+  torsoFlexion: number // 躯干屈（前倾 +），度
   shoulderFlexion: number // 肩屈（前举 +），度
   shoulderAbduction: number // 肩外展（侧举 +），度
   elbowFlexion: number // 肘屈，度
@@ -12,6 +13,7 @@ export type MainAxis = 1 | 2 | 3 | 4 | 5 // 1肩屈 2肩外展 3肘屈 4髋屈 5
 
 export type SensorPosition = 'wrist' | 'upper-arm' | 'thigh' | 'shin'
 export type BasePosture = 'standing' | 'seated' | 'prone' | 'supine'
+export type SpeedProfile = 'uniform' | 'variable' // 匀速 / 非匀速
 
 export interface Keyframe {
   t: number // 归一化时间 0..1
@@ -27,6 +29,7 @@ export interface MotionTemplate {
   mainAxis: MainAxis
   sensorPosition: SensorPosition // 表带/传感器佩戴位置
   basePosture: BasePosture // 基准姿态
+  speedProfile: SpeedProfile // 速度模式：匀速/非匀速
   peakAngleDeg: number
   wristToleranceDeg: number
   cadence: number // 节律 次/分
@@ -46,6 +49,11 @@ export const POSTURE_LABELS: Record<BasePosture, string> = {
   seated: '坐姿',
   prone: '俯卧',
   supine: '仰卧',
+}
+
+export const SPEED_LABELS: Record<SpeedProfile, string> = {
+  uniform: '匀速',
+  variable: '非匀速',
 }
 
 export const AXIS_LABELS: Record<MainAxis, string> = {

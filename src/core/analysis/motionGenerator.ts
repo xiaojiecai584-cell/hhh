@@ -3,6 +3,7 @@ import type {
   JointAngles,
   MainAxis,
   SensorPosition,
+  SpeedProfile,
 } from '../motion/types'
 
 export interface GeneratedDraft {
@@ -10,6 +11,7 @@ export interface GeneratedDraft {
   basePosture: BasePosture
   sensorPosition: SensorPosition
   mainAxis: MainAxis
+  speedProfile: SpeedProfile
   peakAngleDeg: number
   wristToleranceDeg: number
   cadence: number
@@ -40,6 +42,7 @@ const POSTURES: BasePosture[] = ['standing', 'seated', 'prone', 'supine']
 const SENSORS: SensorPosition[] = ['wrist', 'upper-arm', 'thigh', 'shin']
 
 const ZERO: JointAngles = {
+  torsoFlexion: 0,
   shoulderFlexion: 0,
   shoulderAbduction: 0,
   elbowFlexion: 0,
@@ -55,6 +58,7 @@ function clamp(n: unknown, def: number, min: number, max: number): number {
 function angle(a: unknown): JointAngles {
   const o = (a ?? {}) as Record<string, unknown>
   return {
+    torsoFlexion: clamp(o.torsoFlexion, 0, 0, 90),
     shoulderFlexion: clamp(o.shoulderFlexion, 0, 0, 180),
     shoulderAbduction: clamp(o.shoulderAbduction, 0, 0, 180),
     elbowFlexion: clamp(o.elbowFlexion, 0, 0, 180),
@@ -86,6 +90,7 @@ export function normalizeDraft(raw: unknown): GeneratedDraft {
     basePosture: POSTURES.includes(o.basePosture as BasePosture) ? (o.basePosture as BasePosture) : 'standing',
     sensorPosition: SENSORS.includes(o.sensorPosition as SensorPosition) ? (o.sensorPosition as SensorPosition) : 'wrist',
     mainAxis: clamp(o.mainAxis, 1, 1, 5) as MainAxis,
+    speedProfile: o.speedProfile === 'uniform' ? 'uniform' : 'variable',
     peakAngleDeg: clamp(o.peakAngleDeg, 90, 0, 180),
     wristToleranceDeg: clamp(o.wristToleranceDeg, 15, 0, 45),
     cadence: clamp(o.cadence, 30, 1, 120),

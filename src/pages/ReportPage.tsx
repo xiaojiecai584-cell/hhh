@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useBleStore } from '../store/useBleStore'
 import { useReportStore } from '../store/useReportStore'
+import { useDataStore } from '../store/useDataStore'
 import { buildReport } from '../core/report/reportEngine'
 import { ADVICE_TEMPLATES, type AnalysisResult } from '../core/analysis/analyzer'
 import { ACTION_NAMES } from '../core/protocol/types'
@@ -10,6 +11,7 @@ export default function ReportPage() {
   const analysis = useReportStore((s) => s.analysis)
   const setAnalysis = useReportStore((s) => s.setAnalysis)
   const reset = useReportStore((s) => s.reset)
+  const saveSession = useDataStore((s) => s.saveSession)
 
   const report = useMemo(() => buildReport(events), [events])
 
@@ -17,6 +19,7 @@ export default function ReportPage() {
   const [summary, setSummary] = useState('')
   const [advice, setAdvice] = useState<string[]>([])
   const [adviceInput, setAdviceInput] = useState('')
+  const [savedTip, setSavedTip] = useState(false)
 
   if (!report) {
     return (
@@ -48,6 +51,21 @@ export default function ReportPage() {
 
   const save = () => {
     setAnalysis({ score, summary: summary.trim(), advice, anomalies })
+  }
+
+  const saveToHistory = () => {
+    const a: AnalysisResult = { score, summary: summary.trim(), advice, anomalies }
+    setAnalysis(a)
+    saveSession({
+      id: `s-${Date.now()}`,
+      startedAt: Date.now(),
+      actionId: report.actionId,
+      actionName: ACTION_NAMES[report.actionId] ?? `动作${report.actionId}`,
+      report,
+      analysis: a,
+    })
+    setSavedTip(true)
+    setTimeout(() => setSavedTip(false), 2500)
   }
 
   return (
@@ -167,13 +185,23 @@ export default function ReportPage() {
       </div>
 
       <div className="btn-grid">
-        <button className="btn btn--ghost" onClick={reset}>
-          清除结果
-        </button>
-        <button className="btn" onClick={save}>
+        <button className="btn btn--ghost" onClick={save}>
           保存分析
         </button>
+        <button className="btn" onClick={saveToHistory}>
+          保存到历史
+        </button>
       </div>
+
+      {savedTip && (
+        <div className="muted" style={{ fontSize: 12, marginTop: 8, color: 'var(--accent)' }}>
+          已保存到「数据」页，可查看个人累计与历史记录。
+        </div>
+      )}
+
+      <button className="btn btn--ghost" style={{ marginTop: 8, width: '100%' }} onClick={reset}>
+        清除结果
+      </button>
 
       {analysis && (
         <div className="card" style={{ borderColor: 'rgba(53,226,124,0.35)' }}>

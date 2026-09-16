@@ -45,6 +45,13 @@ const ICONS: Record<TabId, ReactNode> = {
       <path d="M19 20v-9" />
     </>
   ),
+  data: (
+    <>
+      <ellipse cx="12" cy="5" rx="7.5" ry="3" />
+      <path d="M4.5 5v14c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3V5" />
+      <path d="M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3" />
+    </>
+  ),
 }
 
 const TABS: { id: TabId; label: string }[] = [
@@ -53,6 +60,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'motion', label: '动作' },
   { id: 'demo', label: '演示' },
   { id: 'report', label: '报告' },
+  { id: 'data', label: '数据' },
 ]
 
 export default function TabBar() {

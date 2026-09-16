@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0a0f14" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Lindoway · 智能哑铃</title>
+    <script>
+      // 页面加载失败自诊断：白屏时直接显示真实报错
+      ;(function () {
+        var errs = []
+        window.addEventListener('error', function (e) {
+          errs.push('Error: ' + (e.message || 'unknown') + (e.filename ? ' @ ' + e.filename + ':' + e.lineno : ''))
+        })
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason
+          errs.push('UnhandledRejection: ' + (r && r.message ? r.message : String(r)))
+        })
+        window.addEventListener('load', function () {
+          setTimeout(function () {
+            var root = document.getElementById('root')
+            if (root && root.childElementCount === 0) {
+              var text = errs.length
+                ? errs.join('\n\n')
+                : '未捕获到 JS 错误（可能是脚本资源 404，请按 F12 → Network 查看 assets 下 .js 的状态码）'
+              var esc = text.replace(/[<>&]/g, function (c) {
+                return { '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]
+              })
+              root.innerHTML =
+                '<div style="max-width:640px;margin:40px auto;padding:16px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.6;color:#ff6b6b;background:#1c0a0a;border:1px solid #5a1a1a;border-radius:8px;white-space:pre-wrap;word-break:break-all;">' +
+                '<div style="font-weight:bold;margin-bottom:8px;color:#fff;">⚠ 页面加载失败</div>' +
+                esc +
+                '</div>'
+            }
+          }, 2000)
+        })
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

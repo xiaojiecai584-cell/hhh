@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Lindoway 项目设计简介</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 18mm 18mm 18mm 18mm;
+    }
+    body {
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+      font-size: 10.5pt;
+      line-height: 1.55;
+      color: #222;
+      background-color: #fff;
+      margin: 0;
+      padding: 0;
+    }
+    .header {
+      border-bottom: 2px solid #1a56db;
+      padding-bottom: 10px;
+      margin-bottom: 16px;
+    }
+    h1 {
+      font-size: 16pt;
+      color: #1a56db;
+      margin: 0 0 5px 0;
+      font-weight: 700;
+    }
+    .subtitle {
+      font-size: 9.5pt;
+      color: #666;
+      margin: 0;
+    }
+    h2 {
+      font-size: 11.5pt;
+      color: #111;
+      border-left: 4px solid #1a56db;
+      padding-left: 8px;
+      margin-top: 14px;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    p {
+      margin: 0 0 8px 0;
+      text-align: justify;
+    }
+    ul {
+      margin: 0 0 8px 0;
+      padding-left: 18px;
+    }
+    li {
+      margin-bottom: 5px;
+      text-align: justify;
+    }
+    .tag {
+      font-weight: 600;
+      color: #0d3c94;
+    }
+    .footer-note {
+      margin-top: 20px;
+      border-top: 1px dashed #ccc;
+      padding-top: 6px;
+      font-size: 8.5pt;
+      color: #888;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>Lindoway：基于参数化编译与端侧闭环的开放式智能哑铃姿态监测系统</h1>
+    <p class="subtitle">2026 年度第十六届“毕昇杯”全国大学生电子设计新技术应用创新竞赛 申报材料</p>
+  </div>
+
+  <h2>1. 项目背景与设计痛点</h2>
+  <p>
+    在抗阻力量训练（如坐姿推举、侧平举等）中，训练者常因肌肉代偿发力或核心不稳，出现手腕异常翻转、行程不足及借力甩动等动作变形，易诱发关节劳损与运动损伤。传统监测方案大多局限于基础离线计数，或要求手机端高频回传解算，存在延迟大、通信易丢包、耗电高且缺乏针对性长效评估的缺陷。针对此痛点，本项目设计了一款轻量快拆的智能哑铃终端，构建“事中低延迟就地纠偏 + 事后结构化数据生成锻炼报告”的完整闭环。
+  </p>
+
+  <h2>2. 系统核心架构与技术实现</h2>
+  <p>
+    系统采用<b>“网页端参数化编译 + 硬件端自主边缘闭环 + 异步事件回传分析”</b>的低耦合协同架构：
+  </p>
+  <ul>
+    <li>
+      <span class="tag">网页端动作编译与报告生成中枢：</span>
+      依托免安装的 Web Bluetooth API 实现双向连接。训练前，前端利用规则库将动作解构为自由度参数包（主运动轴、腕部容限角、行程极值、建议节律），单次下发 10 字节定长指令至硬件；训练结束后，上位机根据硬件端异步回传的统计特征流，自动生成多维维度的“锻炼纠正报告”，直观可视化动作达标率、腕部代偿频次、向心/离心速度曲线分布及疲劳趋势。
+    </li>
+    <li>
+      <span class="tag">硬件端高保真感知与任务调度：</span>
+      硬件核心基于德州仪器 Cortex-M0+ 架构的<b>天猛星 MSPM0G3507</b>微控制器，外挂<b>JY61P 姿态传感器</b>高频采集角速度、加速度与欧拉角数据，搭配外置 BLE 蓝牙串口透传模块。固件基于 FreeRTOS 实时多任务系统进行非阻塞设计，确保姿态解算与人机交互的高效并发。
+    </li>
+    <li>
+      <span class="tag">端侧硬实时判别与微型事件回传：</span>
+      单片机载入参数后独立运行互补滤波与动态时间规整（DTW）算法进行轨迹匹配。一旦捕捉到手腕异常翻转或行程不到位，微秒级驱动机载马达/蜂鸣器报警，并在微型显示屏更新提示；同时，MCU 并不回传臃肿的原始波形，而是将每一次动作判定的“代偿标志位、峰值角度、动作耗时”封装为极轻量的事件包（Event Packet）异步推回手机，兼顾通信零丢包与低功耗。
+    </li>
+  </ul>
+
+  <h2>3. 项目核心创新与竞争优势</h2>
+  <ul>
+    <li>
+      <span class="tag">“配置下发—端侧闭环—事件回传”的高效链路：</span>
+      彻底规避了高频原始数据流占用无线信道的拥堵隐患，以极低通信负荷实现全周期运动捕捉与事后专业纠偏报告生成。
+    </li>
+    <li>
+      <span class="tag">微秒级端侧就地报警：</span>
+      关键动力学判断与代偿判定部署在 MSPM0 本地，消除无线往返抖动，保证动作变形发生的瞬间即刻给训练者触觉警示。
+    </li>
+    <li>
+      <span class="tag">轻量便携与数字化评估结合：</span>
+      快拆模块化硬件保留了器械原有的抓握手感，配合免安装的 Web 端评估报告，兼具电子设计竞赛的底层控制硬实力与消费级产品的高易用性。
+    </li>
+  </ul>
+
+  <div class="footer-note">
+    项目类型：电子设计新技术应用与创新原型 &nbsp;|&nbsp; 编制日期：2026年9月
+  </div>
+
+</body>
+</html>

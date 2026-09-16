@@ -1,0 +1,27 @@
+:root {
+  /* 运动简约风 · 深色底 + 荧光强调色 */
+  --bg: #0a0f14;
+  --bg-2: #0e1620;
+  --surface: #131e2a;
+  --surface-2: #1a2633;
+  --border: #24323f;
+  --border-strong: #35465a;
+  --text: #eaf1f7;
+  --text-2: #a7b4c0;
+  --text-3: #6b7a88;
+  --accent: #35e27c;
+  --accent-strong: #1fbf63;
+  --accent-dim: rgba(53, 226, 124, 0.14);
+  --accent-glow: rgba(53, 226, 124, 0.35);
+  --warn: #ff9a3c;
+  --danger: #ff5d5d;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --header-h: 58px;
+  --nav-h: 64px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --font:
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', -apple-system,
+    'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+}

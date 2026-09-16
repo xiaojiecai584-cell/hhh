@@ -38,7 +38,9 @@ function computePronePose(seg: ResolvedSegments, elbowDeg: number) {
   const armLen = seg.upperArmLen + seg.forearmLen
   const effArm = seg.upperArmLen + seg.forearmLen * Math.cos((elbowDeg * Math.PI) / 180)
   const bodyLen = seg.torsoLen + seg.thighLen + seg.shinLen
-  const pitch = Math.asin(Math.min(1, armLen / bodyLen))
+  const footLen = seg.shinLen * 0.3
+  // 倾斜角：肩在手臂高度、脚踝在脚长高度（脚尖着地）
+  const pitch = Math.asin(Math.min(1, (armLen - footLen) / bodyLen))
   const e = new THREE.Euler(Math.PI / 2 - pitch, 0, 0, 'XYZ')
   const up = new THREE.Vector3(0, 1, 0).applyEuler(e)
   const fwd = new THREE.Vector3(0, 0, 1).applyEuler(e)
@@ -47,7 +49,7 @@ function computePronePose(seg: ResolvedSegments, elbowDeg: number) {
   return {
     rotationX: e.x,
     positionY: -(shoulder.y + hand.y) + 0.05,
-    ankleX: pitch - Math.PI / 2,
+    ankleX: 0,
   }
 }
 
@@ -160,11 +162,13 @@ export default function HumanViewport({
           const p = computePronePose(seg, pose.elbowFlexion)
           humanoid.group.position.y = p.positionY
         } else if (posture === 'standing') {
-          // 站立：脚贴地，身体随髋屈/膝屈升降（深蹲等下肢动作）
+          // 站立：脚固定在地面，身体随髋屈/膝屈升降并后移（深蹲等下肢动作）
           const hip = pose.hipFlexion * rad
           const knee = pose.kneeFlexion * rad
           humanoid.group.position.y =
             seg.thighLen * Math.cos(hip) + seg.shinLen * Math.cos(hip - knee) + 0.05
+          humanoid.group.position.z =
+            -(seg.thighLen * Math.sin(hip) + seg.shinLen * Math.sin(hip - knee))
         }
         // seated / supine 保持初始静态位置
       }

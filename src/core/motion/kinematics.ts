@@ -22,7 +22,7 @@ function kneeQ(a: JointAngles): THREE.Quaternion {
   return eulerQ(a.kneeFlexion, 0, 0)
 }
 function torsoQ(a: JointAngles): THREE.Quaternion {
-  return eulerQ(-a.torsoFlexion, 0, 0)
+  return eulerQ(a.torsoFlexion, 0, 0)
 }
 
 // 基准姿态：身体整体在世界中的旋转（站/坐 = 竖直；俯卧/仰卧 = 水平）

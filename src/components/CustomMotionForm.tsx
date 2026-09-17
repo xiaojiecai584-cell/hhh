@@ -289,7 +289,10 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
     try {
       const d = await httpMotionGenerator.generate(desc)
       applyGenerated(d)
-      setGenResult(d.name)
+      const moveText = d.moves
+        .map((m) => `${ANGLE_KEYS.find((a) => a.key === m.joint)?.label ?? m.joint} ${m.from}°→${m.to}°`)
+        .join('、')
+      setGenResult(moveText ? `${d.name}（主运动：${moveText}）` : d.name)
     } catch (e) {
       setGenError(e instanceof Error ? e.message : String(e))
     } finally {

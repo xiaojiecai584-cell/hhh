@@ -6,6 +6,7 @@ import { useBodyStore } from '../store/useBodyStore'
 import HumanViewport from './HumanViewport'
 import {
   AXIS_LABELS,
+  JOINT_RANGE,
   POSTURE_LABELS,
   SENSOR_LABELS,
   SPEED_LABELS,
@@ -195,7 +196,13 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
     setDraft((d) => ({ ...d, [k]: v }))
 
   const setAngle = (kf: KfKey, key: keyof JointAngles, v: number) =>
-    setDraft((d) => ({ ...d, [kf]: { ...d[kf], [key]: v } }))
+    setDraft((d) => ({
+      ...d,
+      [kf]: {
+        ...d[kf],
+        [key]: Math.min(JOINT_RANGE[key][1], Math.max(JOINT_RANGE[key][0], v)),
+      },
+    }))
 
   const onSensorChange = (sensor: SensorPosition) => {
     const d = buildDefaults(sensor, draft.basePosture)
@@ -482,6 +489,8 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
                   className="input"
                   type="number"
                   inputMode="decimal"
+                  min={JOINT_RANGE[a.key][0]}
+                  max={JOINT_RANGE[a.key][1]}
                   value={draft[row.key][a.key]}
                   onChange={(e) => setAngle(row.key, a.key, num(e.target.value))}
                 />

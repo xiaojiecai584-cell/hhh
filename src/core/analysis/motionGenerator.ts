@@ -1,9 +1,10 @@
-import type {
-  BasePosture,
-  JointAngles,
-  MainAxis,
-  SensorPosition,
-  SpeedProfile,
+import {
+  JOINT_RANGE,
+  type BasePosture,
+  type JointAngles,
+  type MainAxis,
+  type SensorPosition,
+  type SpeedProfile,
 } from '../motion/types'
 
 export interface GeneratedDraft {
@@ -58,13 +59,14 @@ function clamp(n: unknown, def: number, min: number, max: number): number {
 
 function angle(a: unknown): JointAngles {
   const o = (a ?? {}) as Record<string, unknown>
+  const r = (k: keyof JointAngles) => clamp(o[k], 0, JOINT_RANGE[k][0], JOINT_RANGE[k][1])
   return {
-    torsoFlexion: clamp(o.torsoFlexion, 0, 0, 90),
-    shoulderFlexion: clamp(o.shoulderFlexion, 0, 0, 180),
-    shoulderAbduction: clamp(o.shoulderAbduction, 0, 0, 180),
-    elbowFlexion: clamp(o.elbowFlexion, 0, 0, 180),
-    hipFlexion: clamp(o.hipFlexion, 0, 0, 180),
-    kneeFlexion: clamp(o.kneeFlexion, 0, 0, 180),
+    torsoFlexion: r('torsoFlexion'),
+    shoulderFlexion: r('shoulderFlexion'),
+    shoulderAbduction: r('shoulderAbduction'),
+    elbowFlexion: r('elbowFlexion'),
+    hipFlexion: r('hipFlexion'),
+    kneeFlexion: r('kneeFlexion'),
   }
 }
 

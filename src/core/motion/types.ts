@@ -63,3 +63,13 @@ export const AXIS_LABELS: Record<MainAxis, string> = {
   4: '髋屈',
   5: '膝屈',
 }
+
+/** 各关节生理活动度上限 [min, max]（度），作为 AI 生成与手动输入的统一约束 */
+export const JOINT_RANGE: Record<keyof JointAngles, [number, number]> = {
+  torsoFlexion: [0, 80],
+  shoulderFlexion: [0, 180],
+  shoulderAbduction: [0, 180],
+  elbowFlexion: [0, 150],
+  hipFlexion: [0, 140],
+  kneeFlexion: [0, 150],
+}

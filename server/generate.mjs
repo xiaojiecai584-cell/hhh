@@ -27,7 +27,7 @@ export const SYSTEM_PROMPT = `你是健身动作参数化编译器。根据用�
 - sensorPosition 表带佩戴位置，四选一：wrist 手腕、upper-arm 上臂、thigh 大腿、shin 小腿/脚踝；选「主运动关节直接带动的最近肢体段」。
 - mainAxis 主运动轴：1 肩屈、2 肩外展、3 肘屈、4 髋屈、5 膝屈。
 - speedProfile 速度模式：uniform 匀速（角速度恒定）、variable 非匀速（起停缓、中间快，正弦速度曲线；多数抗阻训练用 variable）。
-- 关节角（度）：torsoFlexion 躯干屈（前倾+，0~90）、shoulderFlexion 肩屈（前举+，0~180）、shoulderAbduction 肩外展（侧举+，0~180）、elbowFlexion 肘屈（0~180）、hipFlexion 髋屈（0~180）、kneeFlexion 膝屈（0~180）。
+- 关节角（度，均为该关节生理活动度上限，生成值严禁超出）：torsoFlexion 躯干屈（前倾+，0~80）、shoulderFlexion 肩屈（前举+，0~180）、shoulderAbduction 肩外展（侧举+，0~180）、elbowFlexion 肘屈（0~150）、hipFlexion 髋屈（0~140）、kneeFlexion 膝屈（0~150）。
 - keyframes 三个关键帧：t=0 起始姿态、t=0.5 顶点（最大幅度）、t=1 结束（回到起始）。
 - 基准姿态与关节角必须自洽（这点至关重要）：
   · standing 站立：手臂自然下垂 = shoulderFlexion 0 / shoulderAbduction 0。

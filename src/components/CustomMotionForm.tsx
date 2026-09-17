@@ -113,27 +113,56 @@ function makeDraft(sensor: SensorPosition = 'wrist', posture: BasePosture = 'sta
   }
 }
 
+/** 把已保存的动作模板还原为可编辑的草稿（折叠为起始/顶点/结束三帧） */
+function templateToDraft(t: MotionTemplate): Draft {
+  const sorted = [...t.keyframes].sort((a, b) => a.t - b.t)
+  const start = sorted[0]?.angles ?? { ...ZERO }
+  const end = sorted[sorted.length - 1]?.angles ?? { ...ZERO }
+  const mid = sorted.find((k) => Math.abs(k.t - 0.5) < 0.01) ?? sorted[Math.floor(sorted.length / 2)]
+  return {
+    name: t.name,
+    mainAxis: t.mainAxis,
+    sensorPosition: t.sensorPosition,
+    basePosture: t.basePosture,
+    speedProfile: t.speedProfile,
+    peakAngleDeg: t.peakAngleDeg,
+    wristToleranceDeg: t.wristToleranceDeg,
+    cadence: t.cadence,
+    durationMs: t.durationMs,
+    kfStart: start,
+    kfMid: mid?.angles ?? { ...ZERO },
+    kfEnd: end,
+  }
+}
+
 function num(v: string, fallback = 0): number {
   const n = Number(v)
   return Number.isFinite(n) ? n : fallback
 }
 
-export default function CustomMotionForm() {
+interface CustomMotionFormProps {
+  initial?: MotionTemplate
+  onSaved?: () => void
+}
+
+export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormProps) {
   const addCustom = useCustomMotionStore((s) => s.addCustom)
+  const updateCustom = useCustomMotionStore((s) => s.updateCustom)
   const setTemplateId = useMotionStore((s) => s.setTemplateId)
   const setTab = useAppStore((s) => s.setTab)
   const profile = useBodyStore((s) => s.profile)
-  const [draft, setDraft] = useState<Draft>(() => makeDraft())
+  const [draft, setDraft] = useState<Draft>(() => (initial ? templateToDraft(initial) : makeDraft()))
+  const [previewKf, setPreviewKf] = useState<KfKey>('kfMid')
   const [genDesc, setGenDesc] = useState('')
   const [genLoading, setGenLoading] = useState(false)
   const [genError, setGenError] = useState<string | null>(null)
   const [genResult, setGenResult] = useState<string | null>(null)
   const previewRef = useRef<JointAngles | null>(draft.kfMid)
 
-  // 顶点姿态实时预览
+  // 关键帧姿态实时预览
   useEffect(() => {
-    previewRef.current = draft.kfMid
-  }, [draft])
+    previewRef.current = draft[previewKf]
+  }, [draft, previewKf])
 
   const setKey = <K extends keyof Draft>(k: K, v: Draft[K]) =>
     setDraft((d) => ({ ...d, [k]: v }))
@@ -167,7 +196,7 @@ export default function CustomMotionForm() {
 
   const save = () => {
     const t: MotionTemplate = {
-      id: `custom-${Date.now()}`,
+      id: initial?.id ?? `custom-${Date.now()}`,
       name: draft.name.trim() || '自定义动作',
       type: 'custom',
       actionId: 0,
@@ -185,9 +214,14 @@ export default function CustomMotionForm() {
         { t: 1, angles: draft.kfEnd, easing: 'smoothstep' },
       ],
     }
-    addCustom(t)
-    setTemplateId(t.id)
-    setTab('demo')
+    if (initial) {
+      updateCustom(t)
+      onSaved?.()
+    } else {
+      addCustom(t)
+      setTemplateId(t.id)
+      setTab('demo')
+    }
   }
 
   const applyGenerated = (d: GeneratedDraft) => {
@@ -228,17 +262,16 @@ export default function CustomMotionForm() {
     }
   }
 
-  const shown = ANGLE_KEYS.filter((a) =>
-    relevantKeys(draft.sensorPosition, draft.basePosture).includes(a.key),
-  )
+  const relevant = new Set(relevantKeys(draft.sensorPosition, draft.basePosture))
+  const shown = ANGLE_KEYS
   const axisOptions = AXIS_BY_SENSOR[draft.sensorPosition]
   const recommended = recommendSensor([draft.kfStart, draft.kfMid, draft.kfEnd])
 
   return (
     <div className="card">
-      <h3 className="card__title">新建自定义动作</h3>
+      <h3 className="card__title">{initial ? '编辑自定义动作' : '新建自定义动作'}</h3>
       <p className="card__desc" style={{ marginTop: 4 }}>
-        先确定表带佩戴位置，再配置对应的关节指标。
+        先确定表带佩戴位置，再配置关节指标；生成后可微调全部 6 个关节角度。
       </p>
 
       <div className="field" style={{ marginTop: 12 }}>
@@ -401,20 +434,22 @@ export default function CustomMotionForm() {
       </div>
 
       <div className="muted" style={{ fontSize: 12, margin: '14px 0 6px' }}>
-        ④ 关键帧（关节角度）
+        ④ 关键帧（全部 6 个关节角度，标注「主」为佩戴位置相关关节）
       </div>
       {KF_ROWS.map((row) => (
         <div key={row.key}>
           <div className="muted" style={{ fontSize: 12, margin: '10px 0 6px' }}>
             {row.label}
           </div>
-          <div
-            className="field-grid"
-            style={{ gridTemplateColumns: shown.length === 2 ? '1fr 1fr' : '1fr 1fr 1fr' }}
-          >
+          <div className="field-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
             {shown.map((a) => (
               <label className="field" key={a.key}>
-                <span className="field__label">{a.label}</span>
+                <span className="field__label">
+                  {a.label}
+                  {relevant.has(a.key) && (
+                    <span style={{ color: 'var(--accent)', fontSize: 11, marginLeft: 3 }}>主</span>
+                  )}
+                </span>
                 <input
                   className="input"
                   type="number"
@@ -429,7 +464,19 @@ export default function CustomMotionForm() {
       ))}
 
       <div className="muted" style={{ fontSize: 12, margin: '14px 0 6px' }}>
-        ⑤ 3D 预览（顶点姿态）
+        ⑤ 3D 预览
+      </div>
+      <div className="seg" style={{ marginBottom: 8 }}>
+        {KF_ROWS.map((row) => (
+          <button
+            key={row.key}
+            type="button"
+            className={`seg__btn${previewKf === row.key ? ' seg__btn--active' : ''}`}
+            onClick={() => setPreviewKf(row.key)}
+          >
+            {row.label}
+          </button>
+        ))}
       </div>
       <HumanViewport
         profile={profile}
@@ -439,11 +486,14 @@ export default function CustomMotionForm() {
       />
 
       <div className="btn-grid" style={{ marginTop: 14 }}>
-        <button className="btn btn--ghost" onClick={() => setDraft(makeDraft())}>
+        <button
+          className="btn btn--ghost"
+          onClick={() => setDraft(initial ? templateToDraft(initial) : makeDraft())}
+        >
           重置
         </button>
         <button className="btn" onClick={save}>
-          保存并演示
+          {initial ? '保存修改' : '保存并演示'}
         </button>
       </div>
     </div>

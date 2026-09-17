@@ -3,7 +3,7 @@ import { useMotionStore } from '../store/useMotionStore'
 import { useAppStore } from '../store/useAppStore'
 import { useCustomMotionStore } from '../store/useCustomMotionStore'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
-import { AXIS_LABELS, POSTURE_LABELS, SENSOR_LABELS } from '../core/motion/types'
+import { AXIS_LABELS, POSTURE_LABELS, SENSOR_LABELS, type MotionTemplate } from '../core/motion/types'
 import CustomMotionForm from '../components/CustomMotionForm'
 
 export default function MotionPage() {
@@ -13,6 +13,7 @@ export default function MotionPage() {
   const customs = useCustomMotionStore((s) => s.customs)
   const removeCustom = useCustomMotionStore((s) => s.removeCustom)
   const [showForm, setShowForm] = useState(false)
+  const [editing, setEditing] = useState<MotionTemplate | null>(null)
 
   const goDemo = (id: string) => {
     setTemplateId(id)
@@ -58,7 +59,10 @@ export default function MotionPage() {
           <button
             className="btn btn--ghost"
             style={{ padding: '6px 12px', fontSize: 12 }}
-            onClick={() => setShowForm((v) => !v)}
+            onClick={() => {
+              setEditing(null)
+              setShowForm((v) => !v)
+            }}
           >
             {showForm ? '收起' : '新建'}
           </button>
@@ -84,6 +88,15 @@ export default function MotionPage() {
                   <button className="btn btn--ghost" onClick={() => goDemo(t.id)}>
                     演示
                   </button>
+                  <button
+                    className="btn btn--ghost"
+                    onClick={() => {
+                      setEditing(t)
+                      setShowForm(true)
+                    }}
+                  >
+                    编辑
+                  </button>
                   <button className="btn btn--ghost" onClick={() => removeCustom(t.id)}>
                     删除
                   </button>
@@ -94,7 +107,16 @@ export default function MotionPage() {
         )}
       </div>
 
-      {showForm && <CustomMotionForm />}
+      {showForm && (
+        <CustomMotionForm
+          key={editing?.id ?? 'new'}
+          initial={editing ?? undefined}
+          onSaved={() => {
+            setShowForm(false)
+            setEditing(null)
+          }}
+        />
+      )}
     </div>
   )
 }

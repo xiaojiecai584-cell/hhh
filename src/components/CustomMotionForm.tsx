@@ -18,6 +18,7 @@ import {
 } from '../core/motion/types'
 import { recommendSensor } from '../core/motion/kinematics'
 import { httpMotionGenerator, type GeneratedDraft } from '../core/analysis/motionGenerator'
+import { fetchReferenceImage, type ReferenceImage } from '../core/analysis/referenceImage'
 
 const SENSOR_OPTIONS = Object.entries(SENSOR_LABELS) as [SensorPosition, string][]
 const POSTURE_OPTIONS = Object.entries(POSTURE_LABELS) as [BasePosture, string][]
@@ -82,6 +83,7 @@ function buildDefaults(sensor: SensorPosition, posture: BasePosture) {
 
 interface Draft {
   name: string
+  searchTerm: string
   mainAxis: MainAxis
   sensorPosition: SensorPosition
   basePosture: BasePosture
@@ -99,6 +101,7 @@ function makeDraft(sensor: SensorPosition = 'wrist', posture: BasePosture = 'sta
   const d = buildDefaults(sensor, posture)
   return {
     name: '自定义动作',
+    searchTerm: '',
     mainAxis: d.mainAxis,
     sensorPosition: sensor,
     basePosture: posture,
@@ -121,6 +124,7 @@ function templateToDraft(t: MotionTemplate): Draft {
   const mid = sorted.find((k) => Math.abs(k.t - 0.5) < 0.01) ?? sorted[Math.floor(sorted.length / 2)]
   return {
     name: t.name,
+    searchTerm: '',
     mainAxis: t.mainAxis,
     sensorPosition: t.sensorPosition,
     basePosture: t.basePosture,
@@ -163,6 +167,29 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
   useEffect(() => {
     previewRef.current = draft[previewKf]
   }, [draft, previewKf])
+
+  const searchTerm = (draft.searchTerm || '').trim()
+  const [refImg, setRefImg] = useState<ReferenceImage | null>(null)
+  const [refLoading, setRefLoading] = useState(false)
+
+  // 自动检索真实动作参考图
+  useEffect(() => {
+    if (!searchTerm) {
+      setRefImg(null)
+      return
+    }
+    let alive = true
+    setRefLoading(true)
+    setRefImg(null)
+    fetchReferenceImage(searchTerm).then((img) => {
+      if (!alive) return
+      setRefImg(img)
+      setRefLoading(false)
+    })
+    return () => {
+      alive = false
+    }
+  }, [searchTerm])
 
   const setKey = <K extends keyof Draft>(k: K, v: Draft[K]) =>
     setDraft((d) => ({ ...d, [k]: v }))
@@ -231,6 +258,7 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
     const mid = sorted.find((k) => Math.abs(k.t - 0.5) < 0.01) ?? sorted[Math.floor(sorted.length / 2)]
     setDraft({
       name: d.name,
+      searchTerm: d.searchTerm ?? '',
       mainAxis: d.mainAxis,
       sensorPosition: d.sensorPosition,
       basePosture: d.basePosture,
@@ -484,6 +512,44 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
         posture={draft.basePosture}
         sensorPosition={draft.sensorPosition}
       />
+
+      <div className="muted" style={{ fontSize: 12, margin: '12px 0 6px' }}>
+        ⑥ 真实动作参考图{searchTerm ? `（检索词：${searchTerm}）` : '（AI 生成后自动联网检索）'}
+      </div>
+      {refLoading && <div className="muted" style={{ fontSize: 12 }}>正在联网检索参考图…</div>}
+      {!refLoading && refImg && (
+        <figure style={{ margin: 0 }}>
+          <img
+            src={refImg.thumburl}
+            alt={refImg.title}
+            style={{
+              width: '100%',
+              maxHeight: 240,
+              objectFit: 'contain',
+              background: '#fff',
+              borderRadius: 8,
+            }}
+          />
+          <figcaption className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+            来源：
+            <a href={refImg.descriptionurl} target="_blank" rel="noreferrer">
+              {refImg.title.replace(/^File:/, '')}
+            </a>
+          </figcaption>
+        </figure>
+      )}
+      {!refLoading && !refImg && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          未自动找到参考图，可
+          <a
+            href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(searchTerm || draft.name)}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {' '}在 Google 图片搜索
+          </a>
+        </div>
+      )}
 
       <div className="btn-grid" style={{ marginTop: 14 }}>
         <button

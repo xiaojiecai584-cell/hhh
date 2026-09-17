@@ -14,6 +14,7 @@ export const SYSTEM_PROMPT = `你是健身动作参数化编译器。根据用�
   "wristToleranceDeg": 15,
   "cadence": 30,
   "durationMs": 2000,
+  "searchTerm": "dumbbell lateral raise",
   "keyframes": [
     { "t": 0, "angles": { "torsoFlexion": 0, "shoulderFlexion": 0, "shoulderAbduction": 0, "elbowFlexion": 0, "hipFlexion": 0, "kneeFlexion": 0 }, "easing": "smoothstep" },
     { "t": 0.5, "angles": { "shoulderFlexion": 0, "shoulderAbduction": 0, "elbowFlexion": 0, "hipFlexion": 0, "kneeFlexion": 0 }, "easing": "smoothstep" },
@@ -33,6 +34,7 @@ export const SYSTEM_PROMPT = `你是健身动作参数化编译器。根据用�
   · seated 坐姿：大腿水平 = hipFlexion 约 90、kneeFlexion 约 90。
   · prone 俯卧 / supine 仰卧：身体水平，若动作要求手臂垂直于躯干（支撑身体或指向地面/天花板，如俯卧撑、平板支撑、卧推），则起始与结束关键帧就应给 shoulderFlexion 约 90（或 shoulderAbduction 约 90）作为固定基准角，且该基准角在三个关键帧中保持不变；只有主运动关节（如肘屈）才在 t=0.5 达到最大幅度、t=0/t=1 回到基准。
 - peakAngleDeg：主运动轴在顶点的峰值角度（度）；wristToleranceDeg 腕容限（度）；cadence 建议节律（次/分）；durationMs 单次动作时长（毫秒）。
+- searchTerm：用于联网检索该动作真实参考图的英文检索词（2~5 个英文单词，如 "dumbbell lateral raise"、"barbell squat"、"seated shoulder press"）。
 
 要求：给出符合人体解剖学与标准训练姿态的合理参数；数值精确、自洽；不要编造字段。
 

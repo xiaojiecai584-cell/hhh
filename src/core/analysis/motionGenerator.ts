@@ -16,6 +16,7 @@ export interface GeneratedDraft {
   wristToleranceDeg: number
   cadence: number
   durationMs: number
+  searchTerm?: string
   keyframes: { t: number; angles: JointAngles; easing: 'linear' | 'smoothstep' }[]
 }
 
@@ -95,6 +96,7 @@ export function normalizeDraft(raw: unknown): GeneratedDraft {
     wristToleranceDeg: clamp(o.wristToleranceDeg, 15, 0, 45),
     cadence: clamp(o.cadence, 30, 1, 120),
     durationMs: clamp(o.durationMs, 2000, 500, 10000),
+    searchTerm: String(o.searchTerm || '').slice(0, 60),
     keyframes: kfs,
   }
 }

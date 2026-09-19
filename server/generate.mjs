@@ -187,7 +187,7 @@ async function refineWithVision(draft, { kimiApiKey, kimiModel, kimiBaseUrl, gem
   let basePose = clampPose(draft.basePose)
   let moves = clampMoves(draft.moves)
   try {
-    const png = renderSkeletonPng(basePose, moves, draft.basePosture, draft.sensorPosition)
+    const png = await renderSkeletonPng(basePose, moves, draft.basePosture, draft.sensorPosition)
     const verdict =
       provider === 'kimi'
         ? await critiqueWithKimi(png, draft.name, basePose, moves, kimiApiKey, kimiModel || 'kimi-k2.6', kimiBaseUrl || 'https://api.moonshot.cn/v1')

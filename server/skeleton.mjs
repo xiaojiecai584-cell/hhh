@@ -1,7 +1,6 @@
 // 骨架渲染：把「静止姿态 + 主运动扫动」的顶点姿势画成 2D 骨架 PNG（供视觉模型评审）
 // 复用 three 的数学（Vector3/Quaternion/Euler），与前端 3D 人偶的正向运动学完全一致。
 import { Vector3, Quaternion, Euler } from 'three'
-import { deflateSync } from 'node:zlib'
 
 const P = {
   head: 0.14,
@@ -68,7 +67,7 @@ function postureRotation(basePosture, sk) {
 
 const SENSOR_JOINT = { wrist: 'hand', 'upper-arm': 'elbow', thigh: 'knee', shin: 'ankle' }
 
-export function renderSkeletonPng(basePose, moves, basePosture = 'standing', sensorPosition = 'wrist') {
+export async function renderSkeletonPng(basePose, moves, basePosture = 'standing', sensorPosition = 'wrist') {
   const sk = buildSkeleton(peakAngles(basePose, moves))
   const rot = postureRotation(basePosture, sk)
   const R = (v) => v.clone().applyQuaternion(rot)
@@ -90,7 +89,7 @@ export function renderSkeletonPng(basePose, moves, basePosture = 'standing', sen
 
   const W = 800
   const H = 420
-  const buf = Buffer.alloc(W * H * 4, 0xff)
+  const buf = new Uint8Array(W * H * 4).fill(255)
   drawView(buf, bones, joints, 0, W / 2, (p) => [p.z, p.y]) // 侧视图：矢状面（看屈/伸）
   drawView(buf, bones, joints, W / 2, W / 2, (p) => [p.x, p.y]) // 正视图：冠状面（看外展）
   return encodePng(W, H, buf)
@@ -192,30 +191,51 @@ function crc32(buf) {
   return (c ^ 0xffffffff) >>> 0
 }
 
-function chunk(type, data) {
-  const len = Buffer.alloc(4)
-  len.writeUInt32BE(data.length, 0)
-  const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
-  const crc = Buffer.alloc(4)
-  crc.writeUInt32BE(crc32(body), 0)
-  return Buffer.concat([len, body, crc])
+function concatBytes(arrays) {
+  let total = 0
+  for (const a of arrays) total += a.length
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const a of arrays) {
+    out.set(a, off)
+    off += a.length
+  }
+  return out
 }
 
-function encodePng(W, H, rgba) {
-  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
-  const ihdr = Buffer.alloc(13)
-  ihdr.writeUInt32BE(W, 0)
-  ihdr.writeUInt32BE(H, 4)
+function chunk(type, data) {
+  const typeBytes = new TextEncoder().encode(type)
+  const len = new Uint8Array(4)
+  new DataView(len.buffer).setUint32(0, data.length, false)
+  const body = concatBytes([typeBytes, data])
+  const crc = new Uint8Array(4)
+  new DataView(crc.buffer).setUint32(0, crc32(body), false)
+  return concatBytes([len, body, crc])
+}
+
+async function deflateCompress(data) {
+  const stream = new Response(data).body.pipeThrough(new CompressionStream('deflate'))
+  const ab = await new Response(stream).arrayBuffer()
+  return new Uint8Array(ab)
+}
+
+async function encodePng(W, H, rgba) {
+  const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+  const ihdr = new Uint8Array(13)
+  const dv = new DataView(ihdr.buffer)
+  dv.setUint32(0, W, false)
+  dv.setUint32(4, H, false)
   ihdr[8] = 8 // bit depth
   ihdr[9] = 6 // color type RGBA
   ihdr[10] = 0
   ihdr[11] = 0
   ihdr[12] = 0
   const stride = W * 4
-  const raw = Buffer.alloc((stride + 1) * H)
+  const raw = new Uint8Array((stride + 1) * H)
   for (let y = 0; y < H; y++) {
     raw[y * (stride + 1)] = 0 // filter type 0
-    rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
+    raw.set(rgba.subarray(y * stride, (y + 1) * stride), y * (stride + 1) + 1)
   }
-  return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
+  const idat = await deflateCompress(raw)
+  return concatBytes([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', new Uint8Array(0))])
 }

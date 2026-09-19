@@ -1,3 +1,5 @@
+import { renderSkeletonPng } from './skeleton.mjs'
+
 // 智能动作生成核心（共享给 Netlify Function 与本地 vite 插件）
 
 export const SYSTEM_PROMPT = `你是健身动作参数化编译器。根据用户对动作的描述，输出该动作的标准训练参数。
@@ -72,7 +74,96 @@ function extractJson(text) {
   }
 }
 
-export async function generateActionDraft(description, { apiKey, model = 'deepseek-chat' }) {
+const JOINT_RANGE = {
+  torsoFlexion: [0, 80],
+  shoulderFlexion: [0, 180],
+  shoulderAbduction: [0, 180],
+  elbowFlexion: [0, 150],
+  hipFlexion: [0, 140],
+  kneeFlexion: [0, 150],
+}
+
+function clampAngle(v, key) {
+  const [lo, hi] = JOINT_RANGE[key] || [0, 180]
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 0
+  return Math.min(hi, Math.max(lo, n))
+}
+
+function clampPose(p) {
+  const out = {}
+  for (const k of Object.keys(JOINT_RANGE)) out[k] = clampAngle(p?.[k], k)
+  return out
+}
+
+function clampMoves(moves) {
+  if (!Array.isArray(moves)) return []
+  const out = []
+  for (const m of moves) {
+    const j = m?.joint
+    if (typeof j !== 'string' || !(j in JOINT_RANGE)) continue
+    out.push({ joint: j, from: clampAngle(m.from, j), to: clampAngle(m.to, j) })
+  }
+  return out
+}
+
+const CRITIQUE_PROMPT = (name) => `你是人体运动学评审。左图是动作「${name}」骨架的侧视图（看屈/伸），右图是正视图（看外展）。请判断该顶点姿态是否符合该动作的标准解剖学姿态。
+
+只输出 JSON（不要 markdown）：
+{ "correct": true 或 false, "reason": "一句话说明", "basePose": {…6关节…}, "moves": [{ "joint": "关节名", "from": 起始角, "to": 顶点角 }] }
+
+若 correct=true，basePose 与 moves 原样照抄；若 false，给出修正后的完整值。
+关节范围：torsoFlexion 0~80、shoulderFlexion 0~180、shoulderAbduction 0~180、elbowFlexion 0~150、hipFlexion 0~140、kneeFlexion 0~150。`
+
+async function critiqueWithGemini(pngBuf, name, basePose, moves, apiKey, model) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: CRITIQUE_PROMPT(name) },
+            { text: `当前值 basePose=${JSON.stringify(basePose)} moves=${JSON.stringify(moves)}` },
+            { inline_data: { mime_type: 'image/png', data: pngBuf.toString('base64') } },
+          ],
+        },
+      ],
+      generationConfig: { response_mime_type: 'application/json' },
+    }),
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(`Gemini 评审失败 ${res.status}: ${t.slice(0, 200)}`)
+  }
+  const data = await res.json()
+  const text = (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('')
+  if (!text) throw new Error('Gemini 未返回评审内容')
+  return extractJson(text)
+}
+
+/** 视觉自检闭环：画骨架 → Gemini 看图挑错 → 应用修正（单次） */
+async function refineWithVision(draft, { geminiApiKey, geminiModel }) {
+  if (!geminiApiKey) return draft
+  const model = geminiModel || 'gemini-2.0-flash'
+  let basePose = clampPose(draft.basePose)
+  let moves = clampMoves(draft.moves)
+  try {
+    const png = renderSkeletonPng(basePose, moves, draft.basePosture, draft.sensorPosition)
+    const verdict = await critiqueWithGemini(png, draft.name, basePose, moves, geminiApiKey, model)
+    if (verdict && verdict.correct !== true) {
+      if (verdict.basePose) basePose = clampPose(verdict.basePose)
+      if (verdict.moves) moves = clampMoves(verdict.moves)
+    }
+  } catch (e) {
+    console.error('[refine] 视觉评审跳过：', e?.message || e)
+  }
+  return { ...draft, basePose, moves }
+}
+
+export async function generateActionDraft(description, { apiKey, model = 'deepseek-chat', geminiApiKey, geminiModel }) {
   const isReasoner = model === 'deepseek-reasoner'
   const payload = {
     model,
@@ -109,5 +200,6 @@ export async function generateActionDraft(description, { apiKey, model = 'deepse
   const content = msg?.content || msg?.reasoning_content
   if (!content) throw new Error('模型未返回内容')
 
-  return extractJson(content)
+  const draft = extractJson(content)
+  return refineWithVision(draft, { geminiApiKey, geminiModel })
 }

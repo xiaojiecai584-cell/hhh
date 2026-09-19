@@ -22,6 +22,8 @@ export async function handler(event) {
     const result = await generateActionDraft(String(description).trim(), {
       apiKey: process.env.DEEPSEEK_API_KEY,
       model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+      geminiApiKey: process.env.GEMINI_API_KEY,
+      geminiModel: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
     })
     return { statusCode: 200, headers, body: JSON.stringify(result) }
   } catch (e) {

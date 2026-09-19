@@ -5,9 +5,11 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiKey = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY
   const model = env.DEEPSEEK_MODEL || 'deepseek-chat'
+  const geminiApiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY
+  const geminiModel = env.GEMINI_MODEL || 'gemini-2.0-flash'
 
   return {
-    plugins: [react(), localGenerateApi(apiKey, model)],
+    plugins: [react(), localGenerateApi(apiKey, model, geminiApiKey, geminiModel)],
     base: './',
     server: {
       host: true,
@@ -17,7 +19,12 @@ export default defineConfig(({ mode }) => {
 })
 
 /** 本地开发：把 /api/generate 转发到 server/generate.mjs（生产用 Netlify Function） */
-function localGenerateApi(apiKey: string | undefined, model: string | undefined): Plugin {
+function localGenerateApi(
+  apiKey: string | undefined,
+  model: string | undefined,
+  geminiApiKey: string | undefined,
+  geminiModel: string | undefined,
+): Plugin {
   return {
     name: 'local-generate-api',
     configureServer(server) {
@@ -44,6 +51,8 @@ function localGenerateApi(apiKey: string | undefined, model: string | undefined)
             const result = await generateActionDraft(String(description).trim(), {
               apiKey,
               model: model || 'deepseek-chat',
+              geminiApiKey,
+              geminiModel: geminiModel || 'gemini-2.0-flash',
             })
             res.statusCode = 200
             res.setHeader('Content-Type', 'application/json')

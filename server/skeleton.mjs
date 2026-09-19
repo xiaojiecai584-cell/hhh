@@ -1,6 +1,6 @@
 // 骨架渲染：把「静止姿态 + 主运动扫动」的顶点姿势画成 2D 骨架 PNG（供视觉模型评审）
-// 复用 three 的数学（Vector3/Quaternion/Euler），与前端 3D 人偶的正向运动学完全一致。
-import { Vector3, Quaternion, Euler } from 'three'
+// 零依赖：纯 JS 向量/旋转（与 three 的 Vector3/Quaternion/Euler 数学等价）+ Web 原生 CompressionStream。
+// 在 Node 与 Cloudflare Workers/Pages 均可运行。
 
 const P = {
   head: 0.14,
@@ -15,13 +15,23 @@ const P = {
 }
 
 const rad = (d) => (d * Math.PI) / 180
-const qx = (deg) => new Quaternion().setFromEuler(new Euler(rad(deg), 0, 0, 'XYZ'))
-const qShoulder = (a, side) =>
-  new Quaternion().setFromEuler(new Euler(rad(-a.shoulderFlexion), 0, rad(side * a.shoulderAbduction), 'XYZ'))
-const qElbow = (a) => qx(-a.elbowFlexion)
-const qHip = (a) => qx(-a.hipFlexion)
-const qKnee = (a) => qx(a.kneeFlexion)
-const qTorso = (a) => qx(a.torsoFlexion)
+
+const v3 = (x, y, z) => ({ x, y, z })
+const add = (a, b) => v3(a.x + b.x, a.y + b.y, a.z + b.z)
+const addScaled = (a, b, s) => v3(a.x + b.x * s, a.y + b.y * s, a.z + b.z * s)
+
+// 绕 X 轴旋转（Y-Z 平面）
+function rotX(v, th) {
+  const c = Math.cos(th)
+  const s = Math.sin(th)
+  return v3(v.x, v.y * c - v.z * s, v.y * s + v.z * c)
+}
+// 绕 Z 轴旋转（X-Y 平面）
+function rotZ(v, th) {
+  const c = Math.cos(th)
+  const s = Math.sin(th)
+  return v3(v.x * c - v.y * s, v.x * s + v.y * c, v.z)
+}
 
 function peakAngles(basePose, moves) {
   const a = { ...basePose }
@@ -29,48 +39,51 @@ function peakAngles(basePose, moves) {
   return a
 }
 
+// 正向运动学：髋为原点，+Y 上、+Z 前、+X 右（与前端 groundContact.ts 同约定）
 function buildSkeleton(a) {
-  const torsoQ = qTorso(a)
-  const neck = new Vector3(0, P.torso, 0).applyQuaternion(torsoQ)
-  const head = new Vector3(0, P.torso + P.head, 0).applyQuaternion(torsoQ)
+  const torso = rad(a.torsoFlexion)
+  const neck = rotX(v3(0, P.torso, 0), torso)
+  const head = rotX(v3(0, P.torso + P.head, 0), torso)
   const limbs = []
   for (const side of [1, -1]) {
-    const shoulder = new Vector3(side * P.shoulderHalf, P.torso, 0).applyQuaternion(torsoQ)
-    const upperDir = new Vector3(0, -1, 0).applyQuaternion(torsoQ).applyQuaternion(qShoulder(a, side))
-    const elbow = shoulder.clone().addScaledVector(upperDir, P.upperArm)
-    const foreDir = upperDir.clone().applyQuaternion(qElbow(a))
-    const hand = elbow.clone().addScaledVector(foreDir, P.forearm)
+    const shoulder = rotX(v3(side * P.shoulderHalf, P.torso, 0), torso)
+    // 上臂方向：(0,-1,0) → 躯干旋转 → 肩（先绕X屈，再绕Z外展）
+    let upperDir = rotX(v3(0, -1, 0), torso)
+    upperDir = rotX(upperDir, rad(-a.shoulderFlexion))
+    upperDir = rotZ(upperDir, rad(side * a.shoulderAbduction))
+    const elbow = addScaled(shoulder, upperDir, P.upperArm)
+    const foreDir = rotX(upperDir, rad(-a.elbowFlexion))
+    const hand = addScaled(elbow, foreDir, P.forearm)
 
-    const hip = new Vector3(side * P.hipHalf, 0, 0)
-    const thighDir = new Vector3(0, -1, 0).applyQuaternion(qHip(a))
-    const knee = hip.clone().addScaledVector(thighDir, P.thigh)
-    const shinDir = thighDir.clone().applyQuaternion(qKnee(a))
-    const ankle = knee.clone().addScaledVector(shinDir, P.shin)
-    const toe = ankle.clone().add(new Vector3(0, 0, P.foot))
+    const hip = v3(side * P.hipHalf, 0, 0)
+    const thighDir = rotX(v3(0, -1, 0), rad(-a.hipFlexion))
+    const knee = addScaled(hip, thighDir, P.thigh)
+    const shinDir = rotX(thighDir, rad(a.kneeFlexion))
+    const ankle = addScaled(knee, shinDir, P.shin)
+    const toe = add(ankle, v3(0, 0, P.foot))
 
     limbs.push({ side, shoulder, elbow, hand, hip, knee, ankle, toe })
   }
-  return { neck, head, hipCenter: new Vector3(0, 0, 0), limbs }
+  return { neck, head, hipCenter: v3(0, 0, 0), limbs }
 }
 
-function postureRotation(basePosture, sk) {
+// 姿态整体旋转角（绕 X）：俯卧由手+脚尖两点约束解出，仰卧躺平
+function postureTheta(basePosture, sk) {
   if (basePosture === 'prone') {
-    // 与 solveGroundContact 一致：由手+脚尖两点约束解出倾斜角 θ，使二者贴地
     const hand = sk.limbs[0].hand
     const toe = sk.limbs[0].toe
-    const theta = Math.atan2(hand.y - toe.y, hand.z - toe.z)
-    return new Quaternion().setFromEuler(new Euler(theta, 0, 0, 'XYZ'))
+    return Math.atan2(hand.y - toe.y, hand.z - toe.z)
   }
-  if (basePosture === 'supine') return new Quaternion().setFromEuler(new Euler(-Math.PI / 2, 0, 0, 'XYZ'))
-  return new Quaternion()
+  if (basePosture === 'supine') return -Math.PI / 2
+  return 0
 }
 
 const SENSOR_JOINT = { wrist: 'hand', 'upper-arm': 'elbow', thigh: 'knee', shin: 'ankle' }
 
 export async function renderSkeletonPng(basePose, moves, basePosture = 'standing', sensorPosition = 'wrist') {
   const sk = buildSkeleton(peakAngles(basePose, moves))
-  const rot = postureRotation(basePosture, sk)
-  const R = (v) => v.clone().applyQuaternion(rot)
+  const th = postureTheta(basePosture, sk)
+  const R = (v) => rotX(v, th)
   const sensorJoint = SENSOR_JOINT[sensorPosition] || 'hand'
 
   const bones = [[R(sk.hipCenter), R(sk.neck)], [R(sk.neck), R(sk.head)]]

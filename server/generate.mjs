@@ -144,15 +144,54 @@ async function critiqueWithGemini(pngBuf, name, basePose, moves, apiKey, model) 
   return extractJson(text)
 }
 
-/** 视觉自检闭环：画骨架 → Gemini 看图挑错 → 应用修正（单次） */
-async function refineWithVision(draft, { geminiApiKey, geminiModel }) {
-  if (!geminiApiKey) return draft
-  const model = geminiModel || 'gemini-3.8-flash'
+async function critiqueWithKimi(pngBuf, name, basePose, moves, apiKey, model, baseUrl) {
+  const imageUrl = `data:image/png;base64,${pngBuf.toString('base64')}`
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `${CRITIQUE_PROMPT(name)}\n当前值 basePose=${JSON.stringify(basePose)} moves=${JSON.stringify(moves)}`,
+            },
+            { type: 'image_url', image_url: { url: imageUrl } },
+          ],
+        },
+      ],
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+    }),
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(`Kimi 评审失败 ${res.status}: ${t.slice(0, 200)}`)
+  }
+  const data = await res.json()
+  const text = data?.choices?.[0]?.message?.content || ''
+  if (!text) throw new Error('Kimi 未返回评审内容')
+  return extractJson(text)
+}
+
+/** 视觉自检闭环：画骨架 → 视觉模型看图挑错 → 应用修正（单次）。优先 Kimi，其次 Gemini。 */
+async function refineWithVision(draft, { kimiApiKey, kimiModel, kimiBaseUrl, geminiApiKey, geminiModel }) {
+  const provider = kimiApiKey ? 'kimi' : geminiApiKey ? 'gemini' : null
+  if (!provider) return draft
   let basePose = clampPose(draft.basePose)
   let moves = clampMoves(draft.moves)
   try {
     const png = renderSkeletonPng(basePose, moves, draft.basePosture, draft.sensorPosition)
-    const verdict = await critiqueWithGemini(png, draft.name, basePose, moves, geminiApiKey, model)
+    const verdict =
+      provider === 'kimi'
+        ? await critiqueWithKimi(png, draft.name, basePose, moves, kimiApiKey, kimiModel || 'kimi-k3', kimiBaseUrl || 'https://api.moonshot.cn/v1')
+        : await critiqueWithGemini(png, draft.name, basePose, moves, geminiApiKey, geminiModel || 'gemini-3.8-flash')
     if (verdict && verdict.correct !== true) {
       if (verdict.basePose) basePose = clampPose(verdict.basePose)
       if (verdict.moves) moves = clampMoves(verdict.moves)
@@ -163,7 +202,7 @@ async function refineWithVision(draft, { geminiApiKey, geminiModel }) {
   return { ...draft, basePose, moves }
 }
 
-export async function generateActionDraft(description, { apiKey, model = 'deepseek-chat', geminiApiKey, geminiModel }) {
+export async function generateActionDraft(description, { apiKey, model = 'deepseek-chat', geminiApiKey, geminiModel, kimiApiKey, kimiModel, kimiBaseUrl }) {
   const isReasoner = model === 'deepseek-reasoner'
   const payload = {
     model,
@@ -201,5 +240,5 @@ export async function generateActionDraft(description, { apiKey, model = 'deepse
   if (!content) throw new Error('模型未返回内容')
 
   const draft = extractJson(content)
-  return refineWithVision(draft, { geminiApiKey, geminiModel })
+  return refineWithVision(draft, { geminiApiKey, geminiModel, kimiApiKey, kimiModel, kimiBaseUrl })
 }

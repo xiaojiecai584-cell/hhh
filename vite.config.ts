@@ -7,9 +7,12 @@ export default defineConfig(({ mode }) => {
   const model = env.DEEPSEEK_MODEL || 'deepseek-chat'
   const geminiApiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY
   const geminiModel = env.GEMINI_MODEL || 'gemini-3.8-flash'
+  const kimiApiKey = env.KIMI_API_KEY || process.env.KIMI_API_KEY
+  const kimiModel = env.KIMI_MODEL || 'kimi-k3'
+  const kimiBaseUrl = env.KIMI_BASE_URL || 'https://api.moonshot.cn/v1'
 
   return {
-    plugins: [react(), localGenerateApi(apiKey, model, geminiApiKey, geminiModel)],
+    plugins: [react(), localGenerateApi(apiKey, model, geminiApiKey, geminiModel, kimiApiKey, kimiModel, kimiBaseUrl)],
     base: './',
     server: {
       host: true,
@@ -24,6 +27,9 @@ function localGenerateApi(
   model: string | undefined,
   geminiApiKey: string | undefined,
   geminiModel: string | undefined,
+  kimiApiKey: string | undefined,
+  kimiModel: string | undefined,
+  kimiBaseUrl: string | undefined,
 ): Plugin {
   return {
     name: 'local-generate-api',
@@ -53,6 +59,9 @@ function localGenerateApi(
               model: model || 'deepseek-chat',
               geminiApiKey,
               geminiModel: geminiModel || 'gemini-3.8-flash',
+              kimiApiKey,
+              kimiModel: kimiModel || 'kimi-k3',
+              kimiBaseUrl: kimiBaseUrl || 'https://api.moonshot.cn/v1',
             })
             res.statusCode = 200
             res.setHeader('Content-Type', 'application/json')

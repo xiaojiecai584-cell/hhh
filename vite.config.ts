@@ -6,7 +6,7 @@ export default defineConfig(({ mode }) => {
   const apiKey = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY
   const model = env.DEEPSEEK_MODEL || 'deepseek-chat'
   const geminiApiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY
-  const geminiModel = env.GEMINI_MODEL || 'gemini-2.0-flash'
+  const geminiModel = env.GEMINI_MODEL || 'gemini-flash-latest'
 
   return {
     plugins: [react(), localGenerateApi(apiKey, model, geminiApiKey, geminiModel)],
@@ -52,7 +52,7 @@ function localGenerateApi(
               apiKey,
               model: model || 'deepseek-chat',
               geminiApiKey,
-              geminiModel: geminiModel || 'gemini-2.0-flash',
+              geminiModel: geminiModel || 'gemini-flash-latest',
             })
             res.statusCode = 200
             res.setHeader('Content-Type', 'application/json')

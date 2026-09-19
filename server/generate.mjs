@@ -41,25 +41,62 @@ export const SYSTEM_PROMPT = `你是健身动作参数化编译器。根据用�
 2. 上肢主导动作（主运动肩/肘）：下肢自然微屈稳定（hipFlexion/kneeFlexion 5~15）；躯干自然直立（torsoFlexion 0）。
 3. 俯卧/仰卧：躯干与腿保持刚性直线。
 
+示范（仅示范格式与推理方式，动作范围不限这些）：
+
+输入「俯卧撑」→
+{ "name": "俯卧撑", "basePosture": "prone", "sensorPosition": "wrist", "speedProfile": "variable", "mainAxis": 3, "wristToleranceDeg": 15, "cadence": 30, "durationMs": 2000, "searchTerm": "push up exercise", "basePose": { "torsoFlexion": 0, "shoulderFlexion": 90, "shoulderAbduction": 0, "elbowFlexion": 10, "hipFlexion": 0, "kneeFlexion": 0 }, "moves": [ { "joint": "elbowFlexion", "from": 10, "to": 90 } ] }
+
+输入「杠铃深蹲」→
+{ "name": "杠铃深蹲", "basePosture": "standing", "sensorPosition": "thigh", "speedProfile": "variable", "mainAxis": 4, "wristToleranceDeg": 15, "cadence": 24, "durationMs": 2500, "searchTerm": "barbell back squat", "basePose": { "torsoFlexion": 15, "shoulderFlexion": 75, "shoulderAbduction": 0, "elbowFlexion": 15, "hipFlexion": 0, "kneeFlexion": 0 }, "moves": [ { "joint": "hipFlexion", "from": 0, "to": 95 }, { "joint": "kneeFlexion", "from": 0, "to": 105 } ] }
+
+输入「哑铃侧平举」→
+{ "name": "哑铃侧平举", "basePosture": "standing", "sensorPosition": "wrist", "speedProfile": "variable", "mainAxis": 2, "wristToleranceDeg": 15, "cadence": 30, "durationMs": 2000, "searchTerm": "dumbbell lateral raise", "basePose": { "torsoFlexion": 0, "shoulderFlexion": 0, "shoulderAbduction": 0, "elbowFlexion": 15, "hipFlexion": 5, "kneeFlexion": 5 }, "moves": [ { "joint": "shoulderAbduction", "from": 0, "to": 90 } ] }
+
 要求：给出符合人体解剖学与标准训练姿态的合理参数；数值精确、自洽；不要编造字段；basePose 必须完整给出全部 6 个关节，不要省略、不要用 0 占位。`
 
+function extractJson(text) {
+  const t = String(text).replace(/```json/gi, '').replace(/```/g, '').trim()
+  try {
+    return JSON.parse(t)
+  } catch {
+    const s = t.indexOf('{')
+    const e = t.lastIndexOf('}')
+    if (s >= 0 && e > s) {
+      try {
+        return JSON.parse(t.slice(s, e + 1))
+      } catch {
+        /* fallthrough */
+      }
+    }
+    throw new Error('模型返回内容不是合法 JSON')
+  }
+}
+
 export async function generateActionDraft(description, { apiKey, model = 'deepseek-chat' }) {
+  const isReasoner = model === 'deepseek-reasoner'
+  const payload = {
+    model,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: description },
+    ],
+  }
+  if (isReasoner) {
+    // deepseek-reasoner 不支持 temperature 与 response_format(json_object)，且需更大 max_tokens 容纳推理
+    payload.max_tokens = 8000
+  } else {
+    payload.temperature = 0.2
+    payload.max_tokens = 2000
+    payload.response_format = { type: 'json_object' }
+  }
+
   const res = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: description },
-      ],
-      temperature: 0.2,
-      max_tokens: 2000,
-      response_format: { type: 'json_object' },
-    }),
+    body: JSON.stringify(payload),
   })
 
   if (!res.ok) {
@@ -68,12 +105,9 @@ export async function generateActionDraft(description, { apiKey, model = 'deepse
   }
 
   const data = await res.json()
-  const content = data.choices?.[0]?.message?.content
+  const msg = data.choices?.[0]?.message
+  const content = msg?.content || msg?.reasoning_content
   if (!content) throw new Error('模型未返回内容')
 
-  const cleaned = String(content)
-    .replace(/```json/gi, '')
-    .replace(/```/g, '')
-    .trim()
-  return JSON.parse(cleaned)
+  return extractJson(content)
 }

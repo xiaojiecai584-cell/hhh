@@ -147,7 +147,7 @@ async function critiqueWithGemini(pngBuf, name, basePose, moves, apiKey, model) 
 /** 视觉自检闭环：画骨架 → Gemini 看图挑错 → 应用修正（单次） */
 async function refineWithVision(draft, { geminiApiKey, geminiModel }) {
   if (!geminiApiKey) return draft
-  const model = geminiModel || 'gemini-flash-latest'
+  const model = geminiModel || 'gemini-3.8-flash'
   let basePose = clampPose(draft.basePose)
   let moves = clampMoves(draft.moves)
   try {

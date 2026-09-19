@@ -23,7 +23,7 @@ export async function handler(event) {
       apiKey: process.env.DEEPSEEK_API_KEY,
       model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
       geminiApiKey: process.env.GEMINI_API_KEY,
-      geminiModel: process.env.GEMINI_MODEL || 'gemini-flash-latest',
+      geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
     })
     return { statusCode: 200, headers, body: JSON.stringify(result) }
   } catch (e) {

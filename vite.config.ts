@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
   const geminiApiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY
   const geminiModel = env.GEMINI_MODEL || 'gemini-3.8-flash'
   const kimiApiKey = env.KIMI_API_KEY || process.env.KIMI_API_KEY
-  const kimiModel = env.KIMI_MODEL || 'kimi-k3'
+  const kimiModel = env.KIMI_MODEL || 'kimi-k2.6'
   const kimiBaseUrl = env.KIMI_BASE_URL || 'https://api.moonshot.cn/v1'
 
   return {
@@ -60,7 +60,7 @@ function localGenerateApi(
               geminiApiKey,
               geminiModel: geminiModel || 'gemini-3.8-flash',
               kimiApiKey,
-              kimiModel: kimiModel || 'kimi-k3',
+              kimiModel: kimiModel || 'kimi-k2.6',
               kimiBaseUrl: kimiBaseUrl || 'https://api.moonshot.cn/v1',
             })
             res.statusCode = 200

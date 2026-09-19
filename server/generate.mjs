@@ -190,7 +190,7 @@ async function refineWithVision(draft, { kimiApiKey, kimiModel, kimiBaseUrl, gem
     const png = renderSkeletonPng(basePose, moves, draft.basePosture, draft.sensorPosition)
     const verdict =
       provider === 'kimi'
-        ? await critiqueWithKimi(png, draft.name, basePose, moves, kimiApiKey, kimiModel || 'kimi-k3', kimiBaseUrl || 'https://api.moonshot.cn/v1')
+        ? await critiqueWithKimi(png, draft.name, basePose, moves, kimiApiKey, kimiModel || 'kimi-k2.6', kimiBaseUrl || 'https://api.moonshot.cn/v1')
         : await critiqueWithGemini(png, draft.name, basePose, moves, geminiApiKey, geminiModel || 'gemini-3.8-flash')
     if (verdict && verdict.correct !== true) {
       if (verdict.basePose) basePose = clampPose(verdict.basePose)

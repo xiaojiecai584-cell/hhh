@@ -25,7 +25,7 @@ export async function handler(event) {
       geminiApiKey: process.env.GEMINI_API_KEY,
       geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
       kimiApiKey: process.env.KIMI_API_KEY,
-      kimiModel: process.env.KIMI_MODEL || 'kimi-k3',
+      kimiModel: process.env.KIMI_MODEL || 'kimi-k2.6',
       kimiBaseUrl: process.env.KIMI_BASE_URL || 'https://api.moonshot.cn/v1',
     })
     return { statusCode: 200, headers, body: JSON.stringify(result) }

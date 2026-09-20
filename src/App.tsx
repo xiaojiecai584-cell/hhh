@@ -7,6 +7,7 @@ import MotionPage from './pages/MotionPage'
 import DemoPage from './pages/DemoPage'
 import ReportPage from './pages/ReportPage'
 import DataPage from './pages/DataPage'
+import RepoPage from './pages/RepoPage'
 
 const META: Record<TabId, { title: string; sub: string }> = {
   connect: { title: '连接设备', sub: '蓝牙 · 虚拟设备' },
@@ -15,6 +16,7 @@ const META: Record<TabId, { title: string; sub: string }> = {
   demo: { title: '实时演示', sub: '标准动作回放' },
   report: { title: '锻炼报告', sub: '事件与分析' },
   data: { title: '数据中心', sub: '历史与累计' },
+  repo: { title: '数据仓库', sub: '云端采集与分类' },
 }
 
 const PAGES: Record<TabId, () => ReactElement> = {
@@ -24,6 +26,7 @@ const PAGES: Record<TabId, () => ReactElement> = {
   demo: DemoPage,
   report: ReportPage,
   data: DataPage,
+  repo: RepoPage,
 }
 
 export default function App() {

@@ -11,6 +11,14 @@ const STATE_LABEL: Record<string, string> = {
   disconnected: '未连接',
 }
 
+const ERROR_LABEL: Record<string, string> = {
+  INSUFFICIENT_RANGE: '行程不足',
+  TEMPO_TOO_FAST: '动作过快',
+  TEMPO_TOO_SLOW: '动作过慢',
+  UNSTABLE_MOTION: '动作不稳定',
+  INCOMPLETE_REPETITION: '未完整完成',
+}
+
 export default function ConnectPage() {
   const kind = useBleStore((s) => s.kind)
   const state = useBleStore((s) => s.state)
@@ -28,6 +36,12 @@ export default function ConnectPage() {
   const rawRx = useBleStore((s) => s.rawRx)
   const rxCounts = useBleStore((s) => s.rxCounts)
   const clearRawRx = useBleStore((s) => s.clearRawRx)
+  const recording = useBleStore((s) => s.recording)
+  const recordingCount = useBleStore((s) => s.recordingCount)
+  const currentActionId = useBleStore((s) => s.currentActionId)
+  const lastClassification = useBleStore((s) => s.lastClassification)
+  const startRecording = useBleStore((s) => s.startRecording)
+  const stopRecording = useBleStore((s) => s.stopRecording)
   const bleConfig = useBleConfigStore((s) => s.config)
   const setBleField = useBleConfigStore((s) => s.setField)
   const resetBleConfig = useBleConfigStore((s) => s.reset)
@@ -239,6 +253,72 @@ export default function ConnectPage() {
           {lastAck && (
             <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
               最近 ACK：动作 {ACTION_NAMES[lastAck.actionId] ?? lastAck.actionId}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isConnected && (
+        <div className="card">
+          <div className="row">
+            <h3 className="card__title">动作录制与分类</h3>
+            <span className="chip">
+              {recording
+                ? `录制中 ${recordingCount} 点`
+                : currentActionId
+                  ? ACTION_NAMES[currentActionId] ?? `动作${currentActionId}`
+                  : '未选动作'}
+            </span>
+          </div>
+          <p className="card__desc" style={{ marginTop: 8 }}>
+            先「开始·动作」下发指令，再点「开始录制」做一次动作，点「停止录制」自动按规则分类（标准 / 不标准 + 错误码）并上报到云端。
+          </p>
+          <div className="btn-grid" style={{ marginTop: 10 }}>
+            {recording ? (
+              <button className="btn" onClick={() => void stopRecording()}>
+                停止录制
+              </button>
+            ) : (
+              <button className="btn" onClick={startRecording}>
+                开始录制
+              </button>
+            )}
+          </div>
+          {lastClassification && (
+            <div style={{ marginTop: 12 }}>
+              {lastClassification.available ? (
+                lastClassification.standard ? (
+                  <div className="flag-row">
+                    <span className="flag flag--ok">标准</span>
+                  </div>
+                ) : (
+                  <div className="flag-row">
+                    {lastClassification.errors.map((e) => (
+                      <span className="flag" key={e.code}>
+                        {ERROR_LABEL[e.code] ?? e.code}
+                      </span>
+                    ))}
+                  </div>
+                )
+              ) : (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  信号不可用（样本不足或数据异常），请重新录制。
+                </div>
+              )}
+              {lastClassification.score && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                  总分 {lastClassification.score.overall.toFixed(1)} · 幅度{' '}
+                  {lastClassification.score.rangeOfMotion.toFixed(0)} · 节奏{' '}
+                  {lastClassification.score.tempo.toFixed(0)} · 稳定{' '}
+                  {lastClassification.score.stability.toFixed(0)}
+                </div>
+              )}
+              {lastClassification.features && (
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                  时长 {lastClassification.features.durationMs.toFixed(0)}ms · 峰值{' '}
+                  {lastClassification.features.peakAngularVelocity.toFixed(1)}°/s
+                </div>
+              )}
             </div>
           )}
         </div>

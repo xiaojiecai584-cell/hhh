@@ -248,6 +248,25 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
         { t: 1, angles: draft.kfEnd, easing: 'smoothstep' },
       ],
     }
+    // 上报训练样本（动作描述 → 最终参数），异步不阻塞保存
+    try {
+      fetch('/api/collect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          description: genDesc.trim() || null,
+          name: t.name,
+          basePosture: t.basePosture,
+          sensorPosition: t.sensorPosition,
+          mainAxis: t.mainAxis,
+          speedProfile: t.speedProfile,
+          keyframes: t.keyframes,
+        }),
+      }).catch(() => {})
+    } catch {
+      /* ignore */
+    }
+
     if (initial) {
       updateCustom(t)
       onSaved?.()

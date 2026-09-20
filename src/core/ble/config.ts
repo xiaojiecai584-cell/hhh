@@ -1,4 +1,5 @@
 // BLE 适配参数（可在网页端配置，无需改代码）
+// 新版硬件：ESP32-S3 + 标准 NUS（Nordic UART Service），广播名 Lindoway。
 
 export interface BleConfig {
   serviceUuid: string
@@ -9,10 +10,10 @@ export interface BleConfig {
 }
 
 export const DEFAULT_BLE_CONFIG: BleConfig = {
-  serviceUuid: '0000ffe0-0000-1000-8000-00805f9b34fb',
-  writeUuid: '0000ffe1-0000-1000-8000-00805f9b34fb',
-  notifyUuid: '0000ffe1-0000-1000-8000-00805f9b34fb',
-  deviceNameFilter: '',
+  serviceUuid: '6e400001-b5a3-f393-e0a9-e50e24dcca9e', // NUS 服务
+  writeUuid: '6e400002-b5a3-f393-e0a9-e50e24dcca9e', // 下行 RX：网页→设备（发 0x82）
+  notifyUuid: '6e400003-b5a3-f393-e0a9-e50e24dcca9e', // 上行 TX：设备→网页（收 0x01）
+  deviceNameFilter: 'Lindoway',
   acceptAllDevices: false,
 }
 

@@ -54,10 +54,9 @@ export class WebBluetoothTransport implements BLETransport {
       const namePrefix = cfg.deviceNameFilter.trim()
       const options: RequestDeviceOptions = cfg.acceptAllDevices
         ? { acceptAllDevices: true, optionalServices: [svc] }
-        : {
-            filters: [{ services: [svc], ...(namePrefix ? { namePrefix } : {}) }],
-            optionalServices: [svc],
-          }
+        : namePrefix
+          ? { filters: [{ namePrefix }], optionalServices: [svc] }
+          : { filters: [{ services: [svc] }], optionalServices: [svc] }
       const device = await navigator.bluetooth.requestDevice(options)
       device.addEventListener('gattserverdisconnected', this.handleDisconnected)
       this.device = device

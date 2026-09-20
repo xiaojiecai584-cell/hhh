@@ -12,7 +12,7 @@ import {
   type ImuTarget,
   type PoseFrame,
 } from '../core/protocol/types'
-import { classifyMotion, type RuleResult, type SensorSample } from '../core/analysis/ruleClassifier'
+import type { SensorSample } from '../core/analysis/ruleClassifier'
 
 export type LoggedEvent = EventPacket & { id: number }
 export interface TxEntry {
@@ -25,6 +25,15 @@ export interface RawRxEntry {
   time: string
   typeLabel: string
   hex: string
+}
+export interface ManualLabel {
+  standard: boolean
+  errorCodes: string[]
+}
+export interface PendingRecord {
+  actionId: number
+  actionName: string
+  count: number
 }
 
 function fmtTime(): string {
@@ -53,14 +62,15 @@ interface BleState {
   recording: boolean
   recordingCount: number
   currentActionId: number | null
-  lastClassification: RuleResult | null
+  pending: PendingRecord | null
   setKind: (kind: TransportKind) => void
   connect: () => Promise<void>
   disconnect: () => Promise<void>
   sendStartAction: (target: ImuTarget, label?: string) => Promise<void>
   startRecording: () => void
-  stopRecording: () => Promise<void>
-  clearClassification: () => void
+  stopRecording: () => void
+  submitLabel: (label: ManualLabel) => Promise<void>
+  discardPending: () => void
   clearEvents: () => void
   clearRawRx: () => void
 }
@@ -126,7 +136,7 @@ function attach(t: BLETransport) {
     rxCounts: { pose: 0, event: 0, ack: 0 },
     recording: false,
     recordingCount: 0,
-    lastClassification: null,
+    pending: null,
   })
 }
 
@@ -144,7 +154,7 @@ export const useBleStore = create<BleState>((set) => ({
   recording: false,
   recordingCount: 0,
   currentActionId: null,
-  lastClassification: null,
+  pending: null,
 
   setKind: (kind) => {
     const prev = active
@@ -190,27 +200,39 @@ export const useBleStore = create<BleState>((set) => ({
   startRecording: () => {
     recordBuffer = []
     recordingFlag = true
-    set({ recording: true, recordingCount: 0, lastClassification: null })
+    set({ recording: true, recordingCount: 0, pending: null })
   },
 
-  stopRecording: async () => {
-    const samples = recordBuffer
+  stopRecording: () => {
     const actionId = useBleStore.getState().currentActionId ?? 1
-    recordBuffer = []
     recordingFlag = false
-    set({ recording: false, recordingCount: 0 })
-    const result = classifyMotion(samples, actionId)
-    set({ lastClassification: result })
+    set({
+      recording: false,
+      recordingCount: 0,
+      pending: {
+        actionId,
+        actionName: ACTION_NAMES[actionId] ?? `动作${actionId}`,
+        count: recordBuffer.length,
+      },
+    })
+  },
+
+  submitLabel: async (label) => {
+    const p = useBleStore.getState().pending
+    if (!p) return
+    const samples = recordBuffer
+    recordBuffer = []
+    set({ pending: null })
     try {
       await fetch('/api/collect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           kind: 'sensor_sample',
-          actionId,
-          actionName: ACTION_NAMES[actionId] ?? `动作${actionId}`,
+          actionId: p.actionId,
+          actionName: p.actionName,
           samples,
-          result,
+          label,
         }),
       })
     } catch {
@@ -218,7 +240,10 @@ export const useBleStore = create<BleState>((set) => ({
     }
   },
 
-  clearClassification: () => set({ lastClassification: null }),
+  discardPending: () => {
+    recordBuffer = []
+    set({ pending: null })
+  },
 
   clearEvents: () => set({ events: [] }),
   clearRawRx: () => set({ rawRx: [], rxCounts: { pose: 0, event: 0, ack: 0 } }),

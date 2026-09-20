@@ -18,6 +18,7 @@ const ERROR_LABEL: Record<string, string> = {
   UNSTABLE_MOTION: '动作不稳定',
   INCOMPLETE_REPETITION: '未完整完成',
 }
+const ERROR_CODES = Object.keys(ERROR_LABEL)
 
 export default function ConnectPage() {
   const kind = useBleStore((s) => s.kind)
@@ -39,15 +40,34 @@ export default function ConnectPage() {
   const recording = useBleStore((s) => s.recording)
   const recordingCount = useBleStore((s) => s.recordingCount)
   const currentActionId = useBleStore((s) => s.currentActionId)
-  const lastClassification = useBleStore((s) => s.lastClassification)
+  const pending = useBleStore((s) => s.pending)
   const startRecording = useBleStore((s) => s.startRecording)
   const stopRecording = useBleStore((s) => s.stopRecording)
+  const submitLabel = useBleStore((s) => s.submitLabel)
+  const discardPending = useBleStore((s) => s.discardPending)
   const bleConfig = useBleConfigStore((s) => s.config)
   const setBleField = useBleConfigStore((s) => s.setField)
   const resetBleConfig = useBleConfigStore((s) => s.reset)
   const [busy, setBusy] = useState(false)
   const [showBleConfig, setShowBleConfig] = useState(false)
+  const [labelStandard, setLabelStandard] = useState<boolean | null>(null)
+  const [labelErrors, setLabelErrors] = useState<string[]>([])
   const sendingRef = useRef(false)
+
+  const toggleError = (code: string) =>
+    setLabelErrors((es) => (es.includes(code) ? es.filter((c) => c !== code) : [...es, code]))
+
+  const handleSubmit = async () => {
+    await submitLabel({ standard: labelStandard === true, errorCodes: labelErrors })
+    setLabelStandard(null)
+    setLabelErrors([])
+  }
+
+  const handleDiscard = () => {
+    discardPending()
+    setLabelStandard(null)
+    setLabelErrors([])
+  }
 
   const isConnected = state === 'connected'
 
@@ -261,65 +281,92 @@ export default function ConnectPage() {
       {isConnected && (
         <div className="card">
           <div className="row">
-            <h3 className="card__title">动作录制与分类</h3>
+            <h3 className="card__title">动作录制与标注</h3>
             <span className="chip">
               {recording
                 ? `录制中 ${recordingCount} 点`
-                : currentActionId
-                  ? ACTION_NAMES[currentActionId] ?? `动作${currentActionId}`
-                  : '未选动作'}
+                : pending
+                  ? `${pending.actionName} · ${pending.count} 点`
+                  : currentActionId
+                    ? ACTION_NAMES[currentActionId] ?? `动作${currentActionId}`
+                    : '未选动作'}
             </span>
           </div>
-          <p className="card__desc" style={{ marginTop: 8 }}>
-            先「开始·动作」下发指令，再点「开始录制」做一次动作，点「停止录制」自动按规则分类（标准 / 不标准 + 错误码）并上报到云端。
-          </p>
-          <div className="btn-grid" style={{ marginTop: 10 }}>
-            {recording ? (
-              <button className="btn" onClick={() => void stopRecording()}>
-                停止录制
-              </button>
-            ) : (
-              <button className="btn" onClick={startRecording}>
-                开始录制
-              </button>
-            )}
-          </div>
-          {lastClassification && (
-            <div style={{ marginTop: 12 }}>
-              {lastClassification.available ? (
-                lastClassification.standard ? (
+
+          {pending ? (
+            <>
+              <p className="card__desc" style={{ marginTop: 8 }}>
+                录制完成（{pending.count} 个采样点）。请人工确认该动作是否标准。
+              </p>
+              <div className="seg" style={{ marginTop: 10 }}>
+                <button
+                  type="button"
+                  className={`seg__btn${labelStandard === true ? ' seg__btn--active' : ''}`}
+                  onClick={() => {
+                    setLabelStandard(true)
+                    setLabelErrors([])
+                  }}
+                >
+                  标准
+                </button>
+                <button
+                  type="button"
+                  className={`seg__btn${labelStandard === false ? ' seg__btn--active' : ''}`}
+                  onClick={() => setLabelStandard(false)}
+                >
+                  不标准
+                </button>
+              </div>
+              {labelStandard === false && (
+                <>
+                  <p className="muted" style={{ fontSize: 12, margin: '10px 0 6px' }}>
+                    选择错误类型（可多选）：
+                  </p>
                   <div className="flag-row">
-                    <span className="flag flag--ok">标准</span>
-                  </div>
-                ) : (
-                  <div className="flag-row">
-                    {lastClassification.errors.map((e) => (
-                      <span className="flag" key={e.code}>
-                        {ERROR_LABEL[e.code] ?? e.code}
-                      </span>
+                    {ERROR_CODES.map((code) => (
+                      <button
+                        key={code}
+                        type="button"
+                        className="chip chip--btn"
+                        style={labelErrors.includes(code) ? { outline: '2px solid var(--accent)' } : undefined}
+                        onClick={() => toggleError(code)}
+                      >
+                        {ERROR_LABEL[code]}
+                      </button>
                     ))}
                   </div>
-                )
-              ) : (
-                <div className="muted" style={{ fontSize: 12 }}>
-                  信号不可用（样本不足或数据异常），请重新录制。
-                </div>
+                </>
               )}
-              {lastClassification.score && (
-                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                  总分 {lastClassification.score.overall.toFixed(1)} · 幅度{' '}
-                  {lastClassification.score.rangeOfMotion.toFixed(0)} · 节奏{' '}
-                  {lastClassification.score.tempo.toFixed(0)} · 稳定{' '}
-                  {lastClassification.score.stability.toFixed(0)}
-                </div>
-              )}
-              {lastClassification.features && (
-                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                  时长 {lastClassification.features.durationMs.toFixed(0)}ms · 峰值{' '}
-                  {lastClassification.features.peakAngularVelocity.toFixed(1)}°/s
-                </div>
-              )}
-            </div>
+              <div className="btn-grid" style={{ marginTop: 12 }}>
+                <button className="btn btn--ghost" onClick={handleDiscard}>
+                  丢弃
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => void handleSubmit()}
+                  disabled={labelStandard === null || (labelStandard === false && labelErrors.length === 0)}
+                >
+                  提交入库
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="card__desc" style={{ marginTop: 8 }}>
+                先「开始·动作」下发指令，再点「开始录制」做一次动作，点「停止录制」后人工标注「标准 / 不标准 + 错误码」并入库。
+              </p>
+              <div className="btn-grid" style={{ marginTop: 10 }}>
+                {recording ? (
+                  <button className="btn" onClick={stopRecording}>
+                    停止录制
+                  </button>
+                ) : (
+                  <button className="btn" onClick={startRecording}>
+                    开始录制
+                  </button>
+                )}
+              </div>
+            </>
           )}
         </div>
       )}

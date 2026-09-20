@@ -8,17 +8,6 @@ const ERROR_LABEL: Record<string, string> = {
   INCOMPLETE_REPETITION: '未完整完成',
 }
 
-interface RuleError {
-  code: string
-  severity?: string
-}
-interface SensorResult {
-  available: boolean
-  standard: boolean
-  errors: RuleError[]
-  score?: { overall: number } | null
-  features?: { durationMs: number; peakAngularVelocity: number } | null
-}
 interface CollectItem {
   kind?: string
   name?: string
@@ -26,7 +15,7 @@ interface CollectItem {
   basePosture?: string
   actionId?: number
   actionName?: string
-  result?: SensorResult
+  label?: { standard: boolean; errorCodes: string[] }
 }
 
 export default function RepoPage() {
@@ -56,13 +45,12 @@ export default function RepoPage() {
 
   const sensors = (items ?? []).filter((i) => i.kind === 'sensor_sample')
   const motions = (items ?? []).filter((i) => i.kind === 'motion_params')
-  const standard = sensors.filter((s) => s.result?.available && s.result.standard)
-  const nonStandard = sensors.filter((s) => s.result?.available && !s.result.standard)
-  const unavailable = sensors.filter((s) => s.result && !s.result.available)
+  const standard = sensors.filter((s) => s.label?.standard === true)
+  const nonStandard = sensors.filter((s) => s.label?.standard === false)
 
   const errorCounts: Record<string, number> = {}
   for (const s of nonStandard) {
-    for (const e of s.result?.errors ?? []) errorCounts[e.code] = (errorCounts[e.code] ?? 0) + 1
+    for (const code of s.label?.errorCodes ?? []) errorCounts[code] = (errorCounts[code] ?? 0) + 1
   }
 
   const exportJson = () => {
@@ -95,7 +83,7 @@ export default function RepoPage() {
           </div>
         </div>
         <p className="card__desc" style={{ marginTop: 6 }}>
-          这里汇总所有用户上报的样本（D1 云端），按「标准 / 不标准 + 错误码」分类。
+          汇总所有用户人工标注的样本，按「标准 / 不标准 + 错误码」分类。
         </p>
 
         {error && (
@@ -119,10 +107,6 @@ export default function RepoPage() {
               <div className="stat__label">不标准</div>
             </div>
             <div className="stat">
-              <div className="stat__value">{unavailable.length}</div>
-              <div className="stat__label">信号不可用</div>
-            </div>
-            <div className="stat">
               <div className="stat__value">{motions.length}</div>
               <div className="stat__label">生成样本</div>
             </div>
@@ -132,7 +116,7 @@ export default function RepoPage() {
 
       {items && items.length === 0 && !error && (
         <div className="card">
-          <p className="card__desc">暂无数据。到「连接」页录制动作、或在「动作」页保存动作后，这里就会出现。</p>
+          <p className="card__desc">暂无数据。到「连接」页录制并标注动作、或「动作」页保存动作后，这里就会出现。</p>
         </div>
       )}
 
@@ -155,22 +139,14 @@ export default function RepoPage() {
           <div className="log-list" style={{ marginTop: 10 }}>
             {nonStandard.map((s, i) => (
               <div className="log-item" key={i}>
-                <div className="row">
-                  <span style={{ fontWeight: 600 }}>{s.actionName ?? `动作${s.actionId ?? ''}`}</span>
-                  <span className="muted" style={{ fontSize: 12 }}>
-                    {s.result?.features ? `${s.result.features.durationMs.toFixed(0)}ms` : ''}
-                  </span>
-                </div>
+                <span style={{ fontWeight: 600 }}>{s.actionName ?? `动作${s.actionId ?? ''}`}</span>
                 <div className="flag-row" style={{ marginTop: 4 }}>
-                  {(s.result?.errors ?? []).map((e) => (
-                    <span className="flag" key={e.code}>
-                      {ERROR_LABEL[e.code] ?? e.code}
+                  {(s.label?.errorCodes ?? []).map((code) => (
+                    <span className="flag" key={code}>
+                      {ERROR_LABEL[code] ?? code}
                     </span>
                   ))}
                 </div>
-                {s.result?.score && (
-                  <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>总分 {s.result.score.overall.toFixed(1)}</div>
-                )}
               </div>
             ))}
           </div>
@@ -187,11 +163,6 @@ export default function RepoPage() {
                   <span style={{ fontWeight: 600 }}>{s.actionName ?? `动作${s.actionId ?? ''}`}</span>
                   <span className="flag flag--ok">标准</span>
                 </div>
-                {s.result?.features && (
-                  <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                    {s.result.features.durationMs.toFixed(0)}ms · 峰值 {s.result.features.peakAngularVelocity.toFixed(1)}°/s
-                  </div>
-                )}
               </div>
             ))}
           </div>

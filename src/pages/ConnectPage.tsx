@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react'
-import { useBleStore, type LoggedEvent } from '../store/useBleStore'
+import { useEffect, useRef, useState } from 'react'
+import { useBleStore, type LoggedEvent, type ManualLabel } from '../store/useBleStore'
 import { useBleConfigStore } from '../store/useBleConfigStore'
 import { ACTION_NAMES } from '../core/protocol/types'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
@@ -43,30 +43,58 @@ export default function ConnectPage() {
   const pending = useBleStore((s) => s.pending)
   const startRecording = useBleStore((s) => s.startRecording)
   const stopRecording = useBleStore((s) => s.stopRecording)
-  const submitLabel = useBleStore((s) => s.submitLabel)
+  const submitSegments = useBleStore((s) => s.submitSegments)
   const discardPending = useBleStore((s) => s.discardPending)
   const bleConfig = useBleConfigStore((s) => s.config)
   const setBleField = useBleConfigStore((s) => s.setField)
   const resetBleConfig = useBleConfigStore((s) => s.reset)
   const [busy, setBusy] = useState(false)
   const [showBleConfig, setShowBleConfig] = useState(false)
-  const [labelStandard, setLabelStandard] = useState<boolean | null>(null)
-  const [labelErrors, setLabelErrors] = useState<string[]>([])
+  const [segLabels, setSegLabels] = useState<Record<number, ManualLabel>>({})
+  const [deletedSegs, setDeletedSegs] = useState<Set<number>>(new Set())
   const sendingRef = useRef(false)
 
-  const toggleError = (code: string) =>
-    setLabelErrors((es) => (es.includes(code) ? es.filter((c) => c !== code) : [...es, code]))
+  useEffect(() => {
+    setSegLabels({})
+    setDeletedSegs(new Set())
+  }, [pending])
+
+  const setSegStandard = (idx: number, standard: boolean) =>
+    setSegLabels((prev) => ({
+      ...prev,
+      [idx]: { standard, errorCodes: standard ? [] : (prev[idx]?.errorCodes ?? []) },
+    }))
+
+  const toggleSegError = (idx: number, code: string) =>
+    setSegLabels((prev) => {
+      const cur = prev[idx] ?? { standard: false, errorCodes: [] }
+      const codes = cur.errorCodes.includes(code)
+        ? cur.errorCodes.filter((c) => c !== code)
+        : [...cur.errorCodes, code]
+      return { ...prev, [idx]: { standard: false, errorCodes: codes } }
+    })
+
+  const toggleDeleted = (idx: number) =>
+    setDeletedSegs((prev) => {
+      const s = new Set(prev)
+      if (s.has(idx)) s.delete(idx)
+      else s.add(idx)
+      return s
+    })
 
   const handleSubmit = async () => {
-    await submitLabel({ standard: labelStandard === true, errorCodes: labelErrors })
-    setLabelStandard(null)
-    setLabelErrors([])
+    const p = pending
+    if (!p) return
+    const labels = p.segments.map((_, i) => (deletedSegs.has(i) ? null : (segLabels[i] ?? null)))
+    await submitSegments(labels)
+    setSegLabels({})
+    setDeletedSegs(new Set())
   }
 
   const handleDiscard = () => {
     discardPending()
-    setLabelStandard(null)
-    setLabelErrors([])
+    setSegLabels({})
+    setDeletedSegs(new Set())
   }
 
   const isConnected = state === 'connected'
@@ -286,7 +314,7 @@ export default function ConnectPage() {
               {recording
                 ? `录制中 ${recordingCount} 点`
                 : pending
-                  ? `${pending.actionName} · ${pending.count} 点`
+                  ? `${pending.actionName} · ${pending.segments.length} 段`
                   : currentActionId
                     ? ACTION_NAMES[currentActionId] ?? `动作${currentActionId}`
                     : '未选动作'}
@@ -296,56 +324,73 @@ export default function ConnectPage() {
           {pending ? (
             <>
               <p className="card__desc" style={{ marginTop: 8 }}>
-                录制完成（{pending.count} 个采样点）。请人工确认该动作是否标准。
+                录制完成，自动切分成 {pending.segments.length} 段。请逐段确认并标注（可删除切错的段）。
               </p>
-              <div className="seg" style={{ marginTop: 10 }}>
-                <button
-                  type="button"
-                  className={`seg__btn${labelStandard === true ? ' seg__btn--active' : ''}`}
-                  onClick={() => {
-                    setLabelStandard(true)
-                    setLabelErrors([])
-                  }}
-                >
-                  标准
-                </button>
-                <button
-                  type="button"
-                  className={`seg__btn${labelStandard === false ? ' seg__btn--active' : ''}`}
-                  onClick={() => setLabelStandard(false)}
-                >
-                  不标准
-                </button>
-              </div>
-              {labelStandard === false && (
-                <>
-                  <p className="muted" style={{ fontSize: 12, margin: '10px 0 6px' }}>
-                    选择错误类型（可多选）：
-                  </p>
-                  <div className="flag-row">
-                    {ERROR_CODES.map((code) => (
-                      <button
-                        key={code}
-                        type="button"
-                        className="chip chip--btn"
-                        style={labelErrors.includes(code) ? { outline: '2px solid var(--accent)' } : undefined}
-                        onClick={() => toggleError(code)}
-                      >
-                        {ERROR_LABEL[code]}
-                      </button>
-                    ))}
-                  </div>
-                </>
+              {pending.segments.length === 0 && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                  未检测到有效动作（可能录制时设备未运动），请重新录制。
+                </div>
               )}
+              {pending.segments.map((seg, idx) => {
+                const deleted = deletedSegs.has(idx)
+                if (deleted) return null
+                const label = segLabels[idx]
+                return (
+                  <div
+                    key={idx}
+                    style={{ marginTop: 10, padding: 10, border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8 }}
+                  >
+                    <div className="row">
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>
+                        段{idx + 1} · {seg.durationMs}ms · 峰值 {seg.peak.toFixed(0)}°/s · 轴 {seg.axis}
+                      </span>
+                      <button
+                        className="btn btn--ghost"
+                        style={{ padding: '2px 8px', fontSize: 12 }}
+                        onClick={() => toggleDeleted(idx)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                    <div className="seg" style={{ marginTop: 8 }}>
+                      <button
+                        type="button"
+                        className={`seg__btn${label?.standard === true ? ' seg__btn--active' : ''}`}
+                        onClick={() => setSegStandard(idx, true)}
+                      >
+                        标准
+                      </button>
+                      <button
+                        type="button"
+                        className={`seg__btn${label?.standard === false ? ' seg__btn--active' : ''}`}
+                        onClick={() => setSegStandard(idx, false)}
+                      >
+                        不标准
+                      </button>
+                    </div>
+                    {label?.standard === false && (
+                      <div className="flag-row" style={{ marginTop: 6 }}>
+                        {ERROR_CODES.map((code) => (
+                          <button
+                            key={code}
+                            type="button"
+                            className="chip chip--btn"
+                            style={label.errorCodes.includes(code) ? { outline: '2px solid var(--accent)' } : undefined}
+                            onClick={() => toggleSegError(idx, code)}
+                          >
+                            {ERROR_LABEL[code]}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
               <div className="btn-grid" style={{ marginTop: 12 }}>
                 <button className="btn btn--ghost" onClick={handleDiscard}>
                   丢弃
                 </button>
-                <button
-                  className="btn"
-                  onClick={() => void handleSubmit()}
-                  disabled={labelStandard === null || (labelStandard === false && labelErrors.length === 0)}
-                >
+                <button className="btn" onClick={() => void handleSubmit()}>
                   提交入库
                 </button>
               </div>
@@ -353,7 +398,7 @@ export default function ConnectPage() {
           ) : (
             <>
               <p className="card__desc" style={{ marginTop: 8 }}>
-                先「开始·动作」下发指令，再点「开始录制」做一次动作，点「停止录制」后人工标注「标准 / 不标准 + 错误码」并入库。
+                先「开始·动作」下发指令，再点「开始录制」做一组动作，点「停止录制」后自动切分成单次、逐段标注「标准 / 不标准 + 错误码」并入库。
               </p>
               <div className="btn-grid" style={{ marginTop: 10 }}>
                 {recording ? (

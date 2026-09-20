@@ -13,6 +13,7 @@ import {
   type PoseFrame,
 } from '../core/protocol/types'
 import type { SensorSample } from '../core/analysis/ruleClassifier'
+import { segmentMotion, describeSegment, type SegmentRange } from '../core/analysis/segmentation'
 
 export type LoggedEvent = EventPacket & { id: number }
 export interface TxEntry {
@@ -30,10 +31,16 @@ export interface ManualLabel {
   standard: boolean
   errorCodes: string[]
 }
+export interface PendingSegment {
+  durationMs: number
+  peak: number
+  axis: string
+  count: number
+}
 export interface PendingRecord {
   actionId: number
   actionName: string
-  count: number
+  segments: PendingSegment[]
 }
 
 function fmtTime(): string {
@@ -69,7 +76,7 @@ interface BleState {
   sendStartAction: (target: ImuTarget, label?: string) => Promise<void>
   startRecording: () => void
   stopRecording: () => void
-  submitLabel: (label: ManualLabel) => Promise<void>
+  submitSegments: (labels: (ManualLabel | null)[]) => Promise<void>
   discardPending: () => void
   clearEvents: () => void
   clearRawRx: () => void
@@ -79,6 +86,7 @@ let active: BLETransport | null = null
 let cleanups: (() => void)[] = []
 let seq = 0
 let recordBuffer: SensorSample[] = []
+let segmentRanges: SegmentRange[] = []
 let recordingFlag = false
 
 function attach(t: BLETransport) {
@@ -199,6 +207,7 @@ export const useBleStore = create<BleState>((set) => ({
 
   startRecording: () => {
     recordBuffer = []
+    segmentRanges = []
     recordingFlag = true
     set({ recording: true, recordingCount: 0, pending: null })
   },
@@ -206,35 +215,45 @@ export const useBleStore = create<BleState>((set) => ({
   stopRecording: () => {
     const actionId = useBleStore.getState().currentActionId ?? 1
     recordingFlag = false
+    segmentRanges = segmentMotion(recordBuffer)
+    const segments = segmentRanges.map((r) => describeSegment(recordBuffer, r))
     set({
       recording: false,
       recordingCount: 0,
       pending: {
         actionId,
         actionName: ACTION_NAMES[actionId] ?? `动作${actionId}`,
-        count: recordBuffer.length,
+        segments,
       },
     })
   },
 
-  submitLabel: async (label) => {
+  submitSegments: async (labels) => {
     const p = useBleStore.getState().pending
     if (!p) return
-    const samples = recordBuffer
+    const buf = recordBuffer
+    const ranges = segmentRanges
     recordBuffer = []
+    segmentRanges = []
     set({ pending: null })
     try {
-      await fetch('/api/collect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          kind: 'sensor_sample',
-          actionId: p.actionId,
-          actionName: p.actionName,
-          samples,
-          label,
+      await Promise.all(
+        ranges.map((r, i) => {
+          const label = labels[i]
+          if (!label) return Promise.resolve()
+          return fetch('/api/collect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              kind: 'sensor_sample',
+              actionId: p.actionId,
+              actionName: p.actionName,
+              samples: buf.slice(r.start, r.end + 1),
+              label,
+            }),
+          })
         }),
-      })
+      )
     } catch {
       /* ignore */
     }
@@ -242,6 +261,7 @@ export const useBleStore = create<BleState>((set) => ({
 
   discardPending: () => {
     recordBuffer = []
+    segmentRanges = []
     set({ pending: null })
   },
 

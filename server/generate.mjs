@@ -191,10 +191,13 @@ async function critiqueWithKimi(pngBuf, name, basePose, moves, apiKey, model, ba
   return extractJson(text)
 }
 
-/** 视觉自检闭环：画骨架 → 视觉模型看图挑错 → 应用修正（单次）。优先 Kimi，其次 Gemini。 */
-async function refineWithVision(draft, { kimiApiKey, kimiModel, kimiBaseUrl, geminiApiKey, geminiModel }) {
+/**
+ * 视觉自检评审（可独立调用，供异步后台使用）。
+ * 返回 { provider, draft(可能已修正), verdict, error }。
+ */
+export async function reviewWithVision(draft, { kimiApiKey, kimiModel, kimiBaseUrl, geminiApiKey, geminiModel }) {
   const provider = kimiApiKey ? 'kimi' : geminiApiKey ? 'gemini' : null
-  if (!provider) return draft
+  if (!provider) return { provider: null, draft, verdict: null, error: null }
   let basePose = clampPose(draft.basePose)
   let moves = clampMoves(draft.moves)
   try {
@@ -207,13 +210,15 @@ async function refineWithVision(draft, { kimiApiKey, kimiModel, kimiBaseUrl, gem
       if (verdict.basePose) basePose = clampPose(verdict.basePose)
       if (verdict.moves) moves = clampMoves(verdict.moves)
     }
+    return { provider, draft: { ...draft, basePose, moves }, verdict, error: null }
   } catch (e) {
     console.error('[refine] 视觉评审跳过：', e?.message || e)
+    return { provider, draft, verdict: null, error: e?.message || String(e) }
   }
-  return { ...draft, basePose, moves }
 }
 
-export async function generateActionDraft(description, { apiKey, model = 'deepseek-chat', geminiApiKey, geminiModel, kimiApiKey, kimiModel, kimiBaseUrl }) {
+/** 仅生成（DeepSeek），不含视觉评审。异步方案下先返回它，评审在后台跑。 */
+export async function generateDraft(description, { apiKey, model = 'deepseek-chat' }) {
   const isReasoner = model === 'deepseek-reasoner'
   const payload = {
     model,
@@ -250,6 +255,12 @@ export async function generateActionDraft(description, { apiKey, model = 'deepse
   const content = msg?.content || msg?.reasoning_content
   if (!content) throw new Error('模型未返回内容')
 
-  const draft = extractJson(content)
-  return refineWithVision(draft, { geminiApiKey, geminiModel, kimiApiKey, kimiModel, kimiBaseUrl })
+  return extractJson(content)
+}
+
+/** 同步版：生成 + 视觉评审（供本地/旧部署路径使用）。Cloudflare 生产走异步。 */
+export async function generateActionDraft(description, opts) {
+  const draft = await generateDraft(description, opts)
+  const { draft: refined } = await reviewWithVision(draft, opts)
+  return refined
 }

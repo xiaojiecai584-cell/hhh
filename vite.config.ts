@@ -53,19 +53,26 @@ function localGenerateApi(
             if (!apiKey) throw new Error('缺少 DEEPSEEK_API_KEY（请在 .env 中配置）')
             const { description } = JSON.parse(body || '{}')
             if (!description?.trim()) throw new Error('缺少动作描述')
-            const { generateActionDraft } = await import('./server/generate.mjs')
-            const result = await generateActionDraft(String(description).trim(), {
-              apiKey,
-              model: model || 'deepseek-chat',
+            const { generateDraft, reviewWithVision } = await import('./server/generate.mjs')
+            const desc = String(description).trim()
+            const draft = await generateDraft(desc, { apiKey, model: model || 'deepseek-chat' })
+            res.statusCode = 200
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify(draft))
+            // 视觉评审后台异步跑（本地无 D1，只打印结果到终端）
+            void reviewWithVision(draft, {
               geminiApiKey,
               geminiModel: geminiModel || 'gemini-3.8-flash',
               kimiApiKey,
               kimiModel: kimiModel || 'kimi-k2.7-code-highspeed',
               kimiBaseUrl: kimiBaseUrl || 'https://api.moonshot.cn/v1',
+            }).then((r) => {
+              console.log(
+                '[async-review]',
+                r.provider ?? 'none',
+                r.verdict ? (r.verdict.correct ? '正确' : '需修正') : `跳过: ${r.error ?? ''}`,
+              )
             })
-            res.statusCode = 200
-            res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify(result))
           } catch (e) {
             res.statusCode = 500
             res.setHeader('Content-Type', 'application/json')

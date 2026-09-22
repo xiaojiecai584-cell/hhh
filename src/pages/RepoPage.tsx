@@ -16,6 +16,11 @@ interface CollectItem {
   actionId?: number
   actionName?: string
   annotations?: { code: string; severity?: string }[]
+  // vision_review
+  provider?: string
+  correct?: boolean | null
+  reason?: string | null
+  error?: string | null
 }
 
 export default function RepoPage() {
@@ -45,6 +50,7 @@ export default function RepoPage() {
 
   const sensors = (items ?? []).filter((i) => i.kind === 'sensor_sample')
   const motions = (items ?? []).filter((i) => i.kind === 'motion_params')
+  const reviews = (items ?? []).filter((i) => i.kind === 'vision_review')
   const standard = sensors.filter((s) => Array.isArray(s.annotations) && s.annotations.length === 0)
   const nonStandard = sensors.filter((s) => Array.isArray(s.annotations) && s.annotations.length > 0)
 
@@ -110,9 +116,44 @@ export default function RepoPage() {
               <div className="stat__value">{motions.length}</div>
               <div className="stat__label">生成样本</div>
             </div>
+            <div className="stat">
+              <div className="stat__value">{reviews.length}</div>
+              <div className="stat__label">视觉评审</div>
+            </div>
           </div>
         )}
       </div>
+
+      {reviews.length > 0 && (
+        <div className="card">
+          <h3 className="card__title">视觉评审记录（后台异步）</h3>
+          <div className="log-list" style={{ marginTop: 10 }}>
+            {[...reviews].reverse().map((r, i) => (
+              <div className="log-item" key={i}>
+                <div className="row">
+                  <span style={{ fontWeight: 600 }}>{r.name ?? '—'}</span>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {r.provider ?? '—'}
+                  </span>
+                </div>
+                <div className="flag-row" style={{ marginTop: 4 }}>
+                  {r.error ? (
+                    <span className="flag">评审失败：{r.error.slice(0, 60)}</span>
+                  ) : r.correct === true ? (
+                    <span className="flag flag--ok">姿势正确</span>
+                  ) : (
+                    <span className="flag">需修正</span>
+                  )}
+                </div>
+                {r.reason && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{r.reason}</div>}
+                {r.description && (
+                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>描述：{r.description}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {items && items.length === 0 && !error && (
         <div className="card">

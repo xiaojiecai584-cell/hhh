@@ -107,6 +107,16 @@ function clampMoves(moves) {
   return out
 }
 
+/** Uint8Array → base64。注意：Uint8Array 没有 toString('base64')，必须自己编码（Node/Workers 通用） */
+function toBase64(bytes) {
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
+  }
+  return btoa(bin)
+}
+
 const CRITIQUE_PROMPT = (name) => `你是人体运动学评审。左图是动作「${name}」骨架的侧视图（看屈/伸），右图是正视图（看外展）。请判断该顶点姿态是否符合该动作的标准解剖学姿态。
 
 只输出 JSON（不要 markdown）：
@@ -127,7 +137,7 @@ async function critiqueWithGemini(pngBuf, name, basePose, moves, apiKey, model) 
           parts: [
             { text: CRITIQUE_PROMPT(name) },
             { text: `当前值 basePose=${JSON.stringify(basePose)} moves=${JSON.stringify(moves)}` },
-            { inline_data: { mime_type: 'image/png', data: pngBuf.toString('base64') } },
+            { inline_data: { mime_type: 'image/png', data: toBase64(pngBuf) } },
           ],
         },
       ],
@@ -145,7 +155,7 @@ async function critiqueWithGemini(pngBuf, name, basePose, moves, apiKey, model) 
 }
 
 async function critiqueWithKimi(pngBuf, name, basePose, moves, apiKey, model, baseUrl) {
-  const imageUrl = `data:image/png;base64,${pngBuf.toString('base64')}`
+  const imageUrl = `data:image/png;base64,${toBase64(pngBuf)}`
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -166,8 +176,9 @@ async function critiqueWithKimi(pngBuf, name, basePose, moves, apiKey, model, ba
           ],
         },
       ],
-      temperature: 0.2,
+      // 注意：Kimi 部分模型只接受 temperature=1，故不显式传该参数
       response_format: { type: 'json_object' },
+      reasoning_effort: 'low', // 降低推理长度以控制耗时
     }),
   })
   if (!res.ok) {
@@ -190,7 +201,7 @@ async function refineWithVision(draft, { kimiApiKey, kimiModel, kimiBaseUrl, gem
     const png = await renderSkeletonPng(basePose, moves, draft.basePosture, draft.sensorPosition)
     const verdict =
       provider === 'kimi'
-        ? await critiqueWithKimi(png, draft.name, basePose, moves, kimiApiKey, kimiModel || 'kimi-k2.6', kimiBaseUrl || 'https://api.moonshot.cn/v1')
+        ? await critiqueWithKimi(png, draft.name, basePose, moves, kimiApiKey, kimiModel || 'kimi-k2.7-code-highspeed', kimiBaseUrl || 'https://api.moonshot.cn/v1')
         : await critiqueWithGemini(png, draft.name, basePose, moves, geminiApiKey, geminiModel || 'gemini-3.8-flash')
     if (verdict && verdict.correct !== true) {
       if (verdict.basePose) basePose = clampPose(verdict.basePose)

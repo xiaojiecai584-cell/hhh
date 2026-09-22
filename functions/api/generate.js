@@ -26,7 +26,7 @@ export async function onRequest(context) {
       geminiApiKey: env.GEMINI_API_KEY,
       geminiModel: env.GEMINI_MODEL || 'gemini-3.8-flash',
       kimiApiKey: env.KIMI_API_KEY,
-      kimiModel: env.KIMI_MODEL || 'kimi-k2.6',
+      kimiModel: env.KIMI_MODEL || 'kimi-k2.7-code-highspeed',
       kimiBaseUrl: env.KIMI_BASE_URL || 'https://api.moonshot.cn/v1',
     })
     return new Response(JSON.stringify(result), { status: 200, headers: CORS })

@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useMotionStore } from '../store/useMotionStore'
 import { useBodyStore } from '../store/useBodyStore'
+import { resolveSegments } from '../core/body/bodyProfile'
 import { useBleStore } from '../store/useBleStore'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
 import { useCustomMotionStore } from '../store/useCustomMotionStore'
@@ -25,6 +26,8 @@ export default function DemoPage() {
   const setLoop = useMotionStore((s) => s.setLoop)
   const setSpeed = useMotionStore((s) => s.setSpeed)
   const profile = useBodyStore((s) => s.profile)
+  // 身体比例：下发给设备时要用它做与 3D 预览一致的地面接触解算
+  const seg = useMemo(() => resolveSegments(profile), [profile])
   const bleState = useBleStore((s) => s.state)
   const sendStartAction = useBleStore((s) => s.sendStartAction)
 
@@ -83,7 +86,7 @@ export default function DemoPage() {
     if (sendingRef.current) return
     sendingRef.current = true
     try {
-      await sendStartAction(templateToImuTarget(template, speedProfile), `开始·${template.name}`)
+      await sendStartAction(templateToImuTarget(template, speedProfile, seg), `开始·${template.name}`)
     } finally {
       sendingRef.current = false
     }

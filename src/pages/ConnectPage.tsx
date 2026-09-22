@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useBleStore, type LoggedEvent, type ManualLabel } from '../store/useBleStore'
 import { useBleConfigStore } from '../store/useBleConfigStore'
+import { useBodyStore } from '../store/useBodyStore'
 import { ACTION_NAMES } from '../core/protocol/types'
+import { resolveSegments } from '../core/body/bodyProfile'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
 import { templateToImuTarget } from '../core/motion/imuMapping'
 
@@ -45,6 +47,9 @@ export default function ConnectPage() {
   const stopRecording = useBleStore((s) => s.stopRecording)
   const submitSegments = useBleStore((s) => s.submitSegments)
   const discardPending = useBleStore((s) => s.discardPending)
+  const profile = useBodyStore((s) => s.profile)
+  // 身体比例：下发给设备时要用它做与 3D 预览一致的地面接触解算
+  const seg = useMemo(() => resolveSegments(profile), [profile])
   const bleConfig = useBleConfigStore((s) => s.config)
   const setBleField = useBleConfigStore((s) => s.setField)
   const resetBleConfig = useBleConfigStore((s) => s.reset)
@@ -106,7 +111,7 @@ export default function ConnectPage() {
     sendingRef.current = true
     setBusy(true)
     try {
-      await sendStartAction(templateToImuTarget(t), `开始·${t.name} (0x82)`)
+      await sendStartAction(templateToImuTarget(t, undefined, seg), `开始·${t.name} (0x82)`)
     } finally {
       sendingRef.current = false
       setBusy(false)

@@ -1,4 +1,5 @@
 import { sensorAttitude } from './kinematics'
+import type { ResolvedSegments } from '../body/bodyProfile'
 import type { JointAngles, MotionTemplate, SpeedProfile } from './types'
 import type { ImuTarget } from '../protocol/types'
 
@@ -28,11 +29,16 @@ function round1(n: number): number {
  *   - 非匀速(variable)：正弦速度曲线，峰值 = (π/2) × 平均角速度
  * 主运动轴 = roll/pitch/yaw 中变化幅度最大者，角速度映射 roll→gx、pitch→gy、yaw→gz。
  */
-export function templateToImuTarget(t: MotionTemplate, speedProfile?: SpeedProfile): ImuTarget {
+export function templateToImuTarget(
+  t: MotionTemplate,
+  speedProfile?: SpeedProfile,
+  seg?: ResolvedSegments,
+): ImuTarget {
   const start = anglesAt(t, 0)
   const peak = anglesAt(t, 0.5)
-  const s = sensorAttitude(t.basePosture, t.sensorPosition, start)
-  const p = sensorAttitude(t.basePosture, t.sensorPosition, peak)
+  // 传入 seg 以保证与 3D 预览共用同一套姿态解算（尤其俯卧的倾斜角）
+  const s = sensorAttitude(t.basePosture, t.sensorPosition, start, seg)
+  const p = sensorAttitude(t.basePosture, t.sensorPosition, peak, seg)
 
   const dRoll = p.rollDeg - s.rollDeg
   const dPitch = p.pitchDeg - s.pitchDeg

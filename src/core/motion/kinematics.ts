@@ -1,4 +1,6 @@
 import * as THREE from 'three'
+import type { ResolvedSegments } from '../body/bodyProfile'
+import { computeLandmarks } from './groundContact'
 import type { BasePosture, JointAngles, SensorPosition } from './types'
 
 const rad = (d: number) => (d * Math.PI) / 180
@@ -25,9 +27,18 @@ function torsoQ(a: JointAngles): THREE.Quaternion {
   return eulerQ(a.torsoFlexion, 0, 0)
 }
 
-// 基准姿态：身体整体在世界中的旋转（站/坐 = 竖直；俯卧/仰卧 = 水平）
-function postureQ(p: BasePosture): THREE.Quaternion {
-  if (p === 'prone') return eulerQ(90, 0, 0)
+/**
+ * 基准姿态：身体整体在世界中的旋转（站/坐 = 竖直；俯卧/仰卧 = 水平）。
+ * 俯卧的倾斜角必须与 3D 预览共用同一套地面接触解算（groundContact.solveGroundContact），
+ * 否则「看到的」与「发给设备的」会差几度——所以务必传入 seg。
+ */
+function postureQ(p: BasePosture, a: JointAngles, seg?: ResolvedSegments): THREE.Quaternion {
+  if (p === 'prone') {
+    if (!seg) return eulerQ(90, 0, 0) // 无身体数据时退化为固定 90°
+    const L = computeLandmarks(seg, a)
+    const theta = Math.atan2(L.hand.y - L.toe.y, L.hand.z - L.toe.z)
+    return eulerQ(deg(theta), 0, 0)
+  }
   if (p === 'supine') return eulerQ(-90, 0, 0)
   return new THREE.Quaternion()
 }
@@ -58,8 +69,9 @@ export function sensorAttitude(
   posture: BasePosture,
   sensor: SensorPosition,
   a: JointAngles,
+  seg?: ResolvedSegments,
 ): { rollDeg: number; pitchDeg: number; yawDeg: number } {
-  const q = postureQ(posture).multiply(segmentLocalQ(sensor, a))
+  const q = postureQ(posture, a, seg).multiply(segmentLocalQ(sensor, a))
   const e = new THREE.Euler().setFromQuaternion(q, 'XYZ')
   return {
     rollDeg: round1(deg(e.z)),

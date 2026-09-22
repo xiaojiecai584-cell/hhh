@@ -12,7 +12,7 @@ import {
   type ImuTarget,
   type PoseFrame,
 } from '../core/protocol/types'
-import type { SensorSample } from '../core/analysis/ruleClassifier'
+import { ERROR_SEVERITY, type SensorSample } from '../core/analysis/ruleClassifier'
 import { segmentMotion, describeSegment, type SegmentRange } from '../core/analysis/segmentation'
 
 export type LoggedEvent = EventPacket & { id: number }
@@ -241,6 +241,17 @@ export const useBleStore = create<BleState>((set) => ({
         ranges.map((r, i) => {
           const label = labels[i]
           if (!label) return Promise.resolve()
+          const slice = buf.slice(r.start, r.end + 1)
+          const dur = slice.length ? slice[slice.length - 1].t - slice[0].t : 0
+          // 统一为人工标注标准：annotations（空数组 = 标准），每项带 code/severity/startMs/endMs
+          const annotations = label.standard
+            ? []
+            : label.errorCodes.map((code) => ({
+                code,
+                severity: ERROR_SEVERITY[code] ?? 'medium',
+                startMs: 0,
+                endMs: dur,
+              }))
           return fetch('/api/collect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -248,8 +259,8 @@ export const useBleStore = create<BleState>((set) => ({
               kind: 'sensor_sample',
               actionId: p.actionId,
               actionName: p.actionName,
-              samples: buf.slice(r.start, r.end + 1),
-              label,
+              samples: slice,
+              annotations,
             }),
           })
         }),

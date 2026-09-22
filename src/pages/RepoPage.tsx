@@ -15,7 +15,7 @@ interface CollectItem {
   basePosture?: string
   actionId?: number
   actionName?: string
-  label?: { standard: boolean; errorCodes: string[] }
+  annotations?: { code: string; severity?: string }[]
 }
 
 export default function RepoPage() {
@@ -45,12 +45,12 @@ export default function RepoPage() {
 
   const sensors = (items ?? []).filter((i) => i.kind === 'sensor_sample')
   const motions = (items ?? []).filter((i) => i.kind === 'motion_params')
-  const standard = sensors.filter((s) => s.label?.standard === true)
-  const nonStandard = sensors.filter((s) => s.label?.standard === false)
+  const standard = sensors.filter((s) => Array.isArray(s.annotations) && s.annotations.length === 0)
+  const nonStandard = sensors.filter((s) => Array.isArray(s.annotations) && s.annotations.length > 0)
 
   const errorCounts: Record<string, number> = {}
   for (const s of nonStandard) {
-    for (const code of s.label?.errorCodes ?? []) errorCounts[code] = (errorCounts[code] ?? 0) + 1
+    for (const a of s.annotations ?? []) errorCounts[a.code] = (errorCounts[a.code] ?? 0) + 1
   }
 
   const exportJson = () => {
@@ -141,9 +141,9 @@ export default function RepoPage() {
               <div className="log-item" key={i}>
                 <span style={{ fontWeight: 600 }}>{s.actionName ?? `动作${s.actionId ?? ''}`}</span>
                 <div className="flag-row" style={{ marginTop: 4 }}>
-                  {(s.label?.errorCodes ?? []).map((code) => (
-                    <span className="flag" key={code}>
-                      {ERROR_LABEL[code] ?? code}
+                  {(s.annotations ?? []).map((a) => (
+                    <span className="flag" key={a.code}>
+                      {ERROR_LABEL[a.code] ?? a.code}
                     </span>
                   ))}
                 </div>

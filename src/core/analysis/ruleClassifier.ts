@@ -64,6 +64,15 @@ const ERROR_META: Record<ErrorCode, { severity: RuleError['severity']; confidenc
   INCOMPLETE_REPETITION: { severity: 'high', confidence: 0.95, phase: null },
 }
 
+/** 各错误码的固定严重程度（依据《当前错误分类标准》8.3 节，不得随意修改） */
+export const ERROR_SEVERITY: Record<string, 'low' | 'medium' | 'high'> = {
+  INSUFFICIENT_RANGE: 'medium',
+  TEMPO_TOO_FAST: 'medium',
+  TEMPO_TOO_SLOW: 'low',
+  UNSTABLE_MOTION: 'medium',
+  INCOMPLETE_REPETITION: 'high',
+}
+
 function std(values: number[]): number {
   if (values.length < 2) return 0
   const mean = values.reduce((a, b) => a + b, 0) / values.length

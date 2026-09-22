@@ -21,7 +21,10 @@ export default defineConfig(({ mode }) => {
   }
 })
 
-/** 本地开发：把 /api/generate 转发到 server/generate.mjs（生产用 Netlify Function） */
+/** 本地开发的视觉评审结果暂存（生产用 D1 的 reviews 表） */
+const localReviews = new Map<string, unknown>()
+
+/** 本地开发：把 /api/generate 转发到 server/generate.mjs（生产用 Cloudflare Function） */
 function localGenerateApi(
   apiKey: string | undefined,
   model: string | undefined,
@@ -56,10 +59,11 @@ function localGenerateApi(
             const { generateBestDraft, reviewWithVision } = await import('./server/generate.mjs')
             const desc = String(description).trim()
             const draft = await generateBestDraft(desc, { apiKey, model: model || 'deepseek-chat', candidates: 3 })
+            const reviewId = `local-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
             res.statusCode = 200
             res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify(draft))
-            // 视觉评审后台异步跑（本地无 D1，只打印结果到终端）
+            res.end(JSON.stringify({ ...draft, reviewId }))
+            // 视觉评审后台异步跑（本地存内存，前端轮询 /api/review 取回）
             void reviewWithVision(draft, {
               geminiApiKey,
               geminiModel: geminiModel || 'gemini-3.8-flash',
@@ -67,8 +71,19 @@ function localGenerateApi(
               kimiModel: kimiModel || 'kimi-k2.7-code-highspeed',
               kimiBaseUrl: kimiBaseUrl || 'https://api.moonshot.cn/v1',
             }).then((r) => {
+              localReviews.set(reviewId, {
+                reviewId,
+                status: r.verdict ? 'done' : 'error',
+                provider: r.provider,
+                correct: r.verdict?.correct ?? null,
+                reason: r.verdict?.reason ?? null,
+                error: r.error ?? null,
+                original: { basePose: draft.basePose, moves: draft.moves },
+                corrected: { basePose: r.draft.basePose, moves: r.draft.moves },
+              })
               console.log(
                 '[async-review]',
+                reviewId,
                 r.provider ?? 'none',
                 r.verdict ? (r.verdict.correct ? '正确' : '需修正') : `跳过: ${r.error ?? ''}`,
               )
@@ -79,6 +94,14 @@ function localGenerateApi(
             res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }))
           }
         })
+      })
+
+      // /api/review：本地内存版（生产走 D1 的 reviews 表）
+      server.middlewares.use('/api/review', (req: any, res: any) => {
+        const id = new URL(req.url ?? '', 'http://localhost').searchParams.get('id')
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify(id ? (localReviews.get(id) ?? { status: 'pending' }) : [...localReviews.values()]))
       })
     },
   }

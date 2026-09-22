@@ -25,6 +25,7 @@ interface CollectItem {
 
 export default function RepoPage() {
   const [items, setItems] = useState<CollectItem[] | null>(null)
+  const [reviews, setReviews] = useState<CollectItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -42,6 +43,16 @@ export default function RepoPage() {
     } finally {
       setLoading(false)
     }
+    // 视觉评审记录单独取（失败不影响主列表）
+    try {
+      const r = await fetch('/api/review')
+      if (r.ok) {
+        const d = await r.json()
+        if (Array.isArray(d)) setReviews(d)
+      }
+    } catch {
+      /* ignore */
+    }
   }, [])
 
   useEffect(() => {
@@ -50,7 +61,6 @@ export default function RepoPage() {
 
   const sensors = (items ?? []).filter((i) => i.kind === 'sensor_sample')
   const motions = (items ?? []).filter((i) => i.kind === 'motion_params')
-  const reviews = (items ?? []).filter((i) => i.kind === 'vision_review')
   const standard = sensors.filter((s) => Array.isArray(s.annotations) && s.annotations.length === 0)
   const nonStandard = sensors.filter((s) => Array.isArray(s.annotations) && s.annotations.length > 0)
 

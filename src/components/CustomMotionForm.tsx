@@ -163,6 +163,9 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
   const [genError, setGenError] = useState<string | null>(null)
   const [genResult, setGenResult] = useState<string | null>(null)
   const previewRef = useRef<JointAngles | null>(draft.kfMid)
+  const [reviewState, setReviewState] = useState<string | null>(null)
+  const editedRef = useRef(false) // 用户是否已手动改过（改过则不自动覆盖）
+  const pollRef = useRef(0) // 轮询代次，用于取消过期的轮询
 
   // 关键帧姿态实时预览
   useEffect(() => {
@@ -192,10 +195,13 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
     }
   }, [searchTerm])
 
-  const setKey = <K extends keyof Draft>(k: K, v: Draft[K]) =>
+  const setKey = <K extends keyof Draft>(k: K, v: Draft[K]) => {
+    editedRef.current = true
     setDraft((d) => ({ ...d, [k]: v }))
+  }
 
-  const setAngle = (kf: KfKey, key: keyof JointAngles, v: number) =>
+  const setAngle = (kf: KfKey, key: keyof JointAngles, v: number) => {
+    editedRef.current = true
     setDraft((d) => ({
       ...d,
       [kf]: {
@@ -203,6 +209,7 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
         [key]: Math.min(JOINT_RANGE[key][1], Math.max(JOINT_RANGE[key][0], v)),
       },
     }))
+  }
 
   const onSensorChange = (sensor: SensorPosition) => {
     const d = buildDefaults(sensor, draft.basePosture)
@@ -299,6 +306,73 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
     })
   }
 
+  /** 应用视觉评审修正：把修正后的 basePose + moves 重新合成为起始/顶点/结束三帧 */
+  const applyCorrection = (
+    basePose: Record<string, number>,
+    moves: { joint: string; from: number; to: number }[],
+  ) => {
+    setDraft((d) => {
+      const start = { ...d.kfStart }
+      const mid = { ...d.kfMid }
+      for (const a of ANGLE_KEYS) {
+        const v = basePose[a.key]
+        if (Number.isFinite(v)) {
+          start[a.key] = v
+          mid[a.key] = v
+        }
+      }
+      for (const m of moves) {
+        if (!ANGLE_KEYS.some((a) => a.key === m.joint)) continue
+        const kk = m.joint as keyof JointAngles
+        start[kk] = m.from
+        mid[kk] = m.to
+      }
+      return { ...d, kfStart: start, kfMid: mid, kfEnd: { ...start } }
+    })
+  }
+
+  /** 轮询后台视觉评审结果（约 30 秒内出结果） */
+  const pollReview = async (id: string) => {
+    const gen = ++pollRef.current
+    setReviewState('视觉评审中…（约 30 秒）')
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 3000))
+      if (pollRef.current !== gen) return // 已被新一轮生成取代
+      try {
+        const res = await fetch(`/api/review?id=${encodeURIComponent(id)}`)
+        if (!res.ok) continue
+        const data = await res.json()
+        if (!data || data.status === 'pending') continue
+        if (data.status === 'disabled') {
+          setReviewState(`视觉评审未启用（${data.reason ?? ''}）`)
+          return
+        }
+        if (data.status === 'error' || data.error) {
+          setReviewState(`视觉评审失败：${String(data.error ?? '').slice(0, 50)}`)
+          return
+        }
+        if (data.correct === true) {
+          setReviewState('视觉评审通过 ✅')
+          return
+        }
+        const cp = data.corrected?.basePose
+        const cm = data.corrected?.moves
+        if (cp && Array.isArray(cm) && !editedRef.current) {
+          applyCorrection(cp, cm)
+          setReviewState(`已按视觉评审自动修正 ✅${data.reason ? `（${data.reason}）` : ''}`)
+        } else if (editedRef.current) {
+          setReviewState(`视觉评审建议修正，但你已手动调整，未覆盖${data.reason ? `（${data.reason}）` : ''}`)
+        } else {
+          setReviewState('视觉评审完成')
+        }
+        return
+      } catch {
+        /* 忽略，继续重试 */
+      }
+    }
+    setReviewState('视觉评审超时（未取到结果）')
+  }
+
   const onGenerate = async () => {
     const desc = genDesc.trim()
     if (!desc || genLoading) return
@@ -308,10 +382,13 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
     try {
       const d = await httpMotionGenerator.generate(desc)
       applyGenerated(d)
+      editedRef.current = false
+      setReviewState(null)
       const moveText = d.moves
         .map((m) => `${ANGLE_KEYS.find((a) => a.key === m.joint)?.label ?? m.joint} ${m.from}°→${m.to}°`)
         .join('、')
       setGenResult(moveText ? `${d.name}（主运动：${moveText}）` : d.name)
+      if (d.reviewId) void pollReview(d.reviewId)
     } catch (e) {
       setGenError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -354,6 +431,11 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
         {genResult && !genError && (
           <div className="muted" style={{ fontSize: 12, marginTop: 8, color: 'var(--accent)' }}>
             已生成「{genResult}」，参数已填入下方，可继续手动修改后保存。
+          </div>
+        )}
+        {reviewState && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            {reviewState}
           </div>
         )}
       </div>

@@ -24,6 +24,7 @@ export interface GeneratedDraft {
   cadence: number
   durationMs: number
   searchTerm?: string
+  reviewId?: string
   moves: JointMove[]
   keyframes: { t: number; angles: JointAngles; easing: 'linear' | 'smoothstep' }[]
 }
@@ -163,6 +164,7 @@ export function normalizeDraft(raw: unknown): GeneratedDraft {
     cadence: clamp(o.cadence, 30, 1, 120),
     durationMs: clamp(o.durationMs, 2000, 500, 10000),
     searchTerm: String(o.searchTerm || '').slice(0, 60),
+    reviewId: typeof o.reviewId === 'string' ? o.reviewId : undefined,
     moves,
     keyframes,
   }

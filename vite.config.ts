@@ -53,9 +53,9 @@ function localGenerateApi(
             if (!apiKey) throw new Error('缺少 DEEPSEEK_API_KEY（请在 .env 中配置）')
             const { description } = JSON.parse(body || '{}')
             if (!description?.trim()) throw new Error('缺少动作描述')
-            const { generateDraft, reviewWithVision } = await import('./server/generate.mjs')
+            const { generateBestDraft, reviewWithVision } = await import('./server/generate.mjs')
             const desc = String(description).trim()
-            const draft = await generateDraft(desc, { apiKey, model: model || 'deepseek-chat' })
+            const draft = await generateBestDraft(desc, { apiKey, model: model || 'deepseek-chat', candidates: 3 })
             res.statusCode = 200
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(draft))

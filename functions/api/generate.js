@@ -1,6 +1,6 @@
 // Cloudflare Pages Function：/api/generate
 // 生成立刻返回；视觉评审（Kimi/Gemini）用 waitUntil 在后台跑，结果存入 D1（kind: vision_review）。
-import { generateDraft, reviewWithVision } from '../../server/generate.mjs'
+import { generateBestDraft, reviewWithVision } from '../../server/generate.mjs'
 
 const CORS = {
   'Content-Type': 'application/json',
@@ -63,9 +63,10 @@ export async function onRequest(context) {
     const { description } = await request.json()
     if (!description?.trim()) throw new Error('缺少动作描述')
     const desc = String(description).trim()
-    const draft = await generateDraft(desc, {
+    const draft = await generateBestDraft(desc, {
       apiKey: env.DEEPSEEK_API_KEY,
       model: env.DEEPSEEK_MODEL || 'deepseek-chat',
+      candidates: 3,
     })
     // 立刻返回生成结果；视觉评审丢到后台，不阻塞响应
     const task = runAsyncReview(env, draft, desc)

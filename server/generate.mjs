@@ -218,7 +218,7 @@ export async function reviewWithVision(draft, { kimiApiKey, kimiModel, kimiBaseU
 }
 
 /** 仅生成（DeepSeek），不含视觉评审。异步方案下先返回它，评审在后台跑。 */
-export async function generateDraft(description, { apiKey, model = 'deepseek-chat' }) {
+export async function generateDraft(description, { apiKey, model = 'deepseek-chat', temperature }) {
   const isReasoner = model === 'deepseek-reasoner'
   const payload = {
     model,
@@ -231,7 +231,7 @@ export async function generateDraft(description, { apiKey, model = 'deepseek-cha
     // deepseek-reasoner 不支持 temperature 与 response_format(json_object)，且需更大 max_tokens 容纳推理
     payload.max_tokens = 8000
   } else {
-    payload.temperature = 0.2
+    payload.temperature = temperature ?? 0.2
     payload.max_tokens = 2000
     payload.response_format = { type: 'json_object' }
   }
@@ -263,4 +263,77 @@ export async function generateActionDraft(description, opts) {
   const draft = await generateDraft(description, opts)
   const { draft: refined } = await reviewWithVision(draft, opts)
   return refined
+}
+
+// ---------- 多候选择优（思路③）：纯规则打分，不依赖任何动作知识 ----------
+
+const ALL_JOINTS = ['torsoFlexion', 'shoulderFlexion', 'shoulderAbduction', 'elbowFlexion', 'hipFlexion', 'kneeFlexion']
+/** 主运动轴 → 对应关节，用于校验 mainAxis 与 moves 是否自洽 */
+const AXIS_JOINT = { 1: 'shoulderFlexion', 2: 'shoulderAbduction', 3: 'elbowFlexion', 4: 'hipFlexion', 5: 'kneeFlexion' }
+
+/** 规则打分：只查「结构完整性 / 生理范围 / 主运动关节与 mainAxis 自洽 / 幅度合理」 */
+export function scoreDraft(draft) {
+  let score = 0
+  const issues = []
+  const bp = draft?.basePose ?? {}
+  // ① 6 关节齐全
+  const missing = ALL_JOINTS.filter((j) => !Number.isFinite(bp[j]))
+  if (missing.length) issues.push(`basePose缺${missing.join('/')}`)
+  else score += 2
+  // ② 生理范围
+  const bad = new Set()
+  for (const j of ALL_JOINTS) {
+    const r = JOINT_RANGE[j]
+    if (Number.isFinite(bp[j]) && (bp[j] < r[0] || bp[j] > r[1])) bad.add(j)
+  }
+  const moves = Array.isArray(draft?.moves) ? draft.moves.filter((m) => m && JOINT_RANGE[m.joint]) : []
+  for (const m of moves) {
+    const r = JOINT_RANGE[m.joint]
+    if (m.from < r[0] || m.from > r[1] || m.to < r[0] || m.to > r[1]) bad.add(m.joint)
+  }
+  if (bad.size) issues.push(`超范围${[...bad].join('/')}`)
+  else score += 2
+  // ③ 必须给出主运动关节
+  if (!moves.length) issues.push('无主运动关节')
+  else score += 2
+  // ④ mainAxis 与 moves 里的主关节自洽
+  const expect = AXIS_JOINT[draft?.mainAxis]
+  const main = moves.find((m) => m.joint === expect)
+  if (main) score += 3
+  else issues.push(`mainAxis=${draft?.mainAxis}与主关节[${moves.map((m) => m.joint).join('/')}]不自洽`)
+  // ⑤ 主运动幅度合理
+  if (main && main.to - main.from >= 20) score += 1
+  else if (main) issues.push(`主运动幅度仅${main.to - main.from}°`)
+  return { score, issues }
+}
+
+/** 排序候选：规则分 + 交叉一致性（多数票，与多数候选一致者加分） */
+export function rankDrafts(candidates) {
+  const scored = candidates.map((c) => ({ draft: c, ...scoreDraft(c) }))
+  const counts = {}
+  for (const s of scored) {
+    const key = (s.draft?.moves ?? []).map((m) => m?.joint).filter(Boolean).sort().join('+')
+    counts[key] = (counts[key] ?? 0) + 1
+  }
+  for (const s of scored) {
+    const key = (s.draft?.moves ?? []).map((m) => m?.joint).filter(Boolean).sort().join('+')
+    s.agree = counts[key]
+    s.score += (counts[key] - 1) * 2
+  }
+  return scored.sort((a, b) => b.score - a.score)
+}
+
+/** 生成 N 个候选（高温扰动以获取多样性）→ 规则择优 */
+export async function generateBestDraft(description, { apiKey, model, candidates = 3 } = {}) {
+  const settled = await Promise.allSettled(
+    Array.from({ length: candidates }, () => generateDraft(description, { apiKey, model, temperature: 0.8 })),
+  )
+  const ok = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)
+  if (!ok.length) throw new Error(settled[0]?.reason?.message || '候选生成全部失败')
+  const ranked = rankDrafts(ok)
+  console.log(
+    '[candidates]',
+    ranked.map((r) => `${r.score}分/一致${r.agree}${r.issues.length ? '（' + r.issues.join('；') + '）' : ''}`).join(' | '),
+  )
+  return ranked[0].draft
 }

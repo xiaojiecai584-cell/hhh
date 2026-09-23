@@ -9,6 +9,7 @@ const ERROR_LABEL: Record<string, string> = {
 }
 
 interface CollectItem {
+  _id?: number | string
   kind?: string
   name?: string
   description?: string | null
@@ -28,6 +29,7 @@ export default function RepoPage() {
   const [reviews, setReviews] = useState<CollectItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [removing, setRemoving] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -58,6 +60,25 @@ export default function RepoPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  /** 删除一条：视觉评审走 /api/review，其余走 /api/collect */
+  const removeItem = async (kind: string | undefined, id: number | string | undefined) => {
+    if (id === undefined) return
+    const label =
+      kind === 'vision_review' ? '评审记录' : kind === 'sensor_sample' ? '录制样本' : '生成样本'
+    if (!window.confirm(`确定删除这条${label}？此操作不可恢复。`)) return
+    setRemoving(String(id))
+    try {
+      const base = kind === 'vision_review' ? '/api/review' : '/api/collect'
+      const res = await fetch(`${base}?id=${encodeURIComponent(String(id))}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(`删除失败（${res.status}）`)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRemoving(null)
+    }
+  }
 
   const sensors = (items ?? []).filter((i) => i.kind === 'sensor_sample')
   const motions = (items ?? []).filter((i) => i.kind === 'motion_params')
@@ -139,12 +160,13 @@ export default function RepoPage() {
           <h3 className="card__title">视觉评审记录（后台异步）</h3>
           <div className="log-list" style={{ marginTop: 10 }}>
             {[...reviews].reverse().map((r, i) => (
-              <div className="log-item" key={i}>
+              <div className="log-item" key={String(r._id ?? i)}>
                 <div className="row">
                   <span style={{ fontWeight: 600 }}>{r.name ?? '—'}</span>
                   <span className="muted" style={{ fontSize: 12 }}>
                     {r.provider ?? '—'}
                   </span>
+                  <DelBtn busy={removing === String(r._id)} onClick={() => void removeItem('vision_review', r._id)} />
                 </div>
                 <div className="flag-row" style={{ marginTop: 4 }}>
                   {r.error ? (
@@ -189,8 +211,11 @@ export default function RepoPage() {
           <h3 className="card__title">不标准样本</h3>
           <div className="log-list" style={{ marginTop: 10 }}>
             {nonStandard.map((s, i) => (
-              <div className="log-item" key={i}>
-                <span style={{ fontWeight: 600 }}>{s.actionName ?? `动作${s.actionId ?? ''}`}</span>
+              <div className="log-item" key={String(s._id ?? i)}>
+                <div className="row">
+                  <span style={{ fontWeight: 600 }}>{s.actionName ?? `动作${s.actionId ?? ''}`}</span>
+                  <DelBtn busy={removing === String(s._id)} onClick={() => void removeItem('sensor_sample', s._id)} />
+                </div>
                 <div className="flag-row" style={{ marginTop: 4 }}>
                   {(s.annotations ?? []).map((a) => (
                     <span className="flag" key={a.code}>
@@ -212,7 +237,7 @@ export default function RepoPage() {
               <div className="log-item" key={i}>
                 <div className="row">
                   <span style={{ fontWeight: 600 }}>{s.actionName ?? `动作${s.actionId ?? ''}`}</span>
-                  <span className="flag flag--ok">标准</span>
+                  <DelBtn busy={removing === String(s._id)} onClick={() => void removeItem('sensor_sample', s._id)} />
                 </div>
               </div>
             ))}
@@ -228,7 +253,7 @@ export default function RepoPage() {
               <div className="log-item" key={i}>
                 <div className="row">
                   <span style={{ fontWeight: 600 }}>{m.name}</span>
-                  <span className="muted" style={{ fontSize: 12 }}>{m.basePosture}</span>
+                  <DelBtn busy={removing === String(m._id)} onClick={() => void removeItem('motion_params', m._id)} />
                 </div>
                 {m.description && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>描述：{m.description}</div>}
               </div>
@@ -237,5 +262,19 @@ export default function RepoPage() {
         </div>
       )}
     </div>
+  )
+}
+
+function DelBtn({ busy, onClick }: { busy: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="btn btn--ghost"
+      style={{ padding: '2px 8px', fontSize: 12, marginLeft: 8 }}
+      disabled={busy}
+      onClick={onClick}
+    >
+      {busy ? '删除中…' : '删除'}
+    </button>
   )
 }

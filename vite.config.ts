@@ -23,6 +23,9 @@ export default defineConfig(({ mode }) => {
 
 /** 本地开发的视觉评审结果暂存（生产用 D1 的 reviews 表） */
 const localReviews = new Map<string, unknown>()
+/** 本地开发的采集样本暂存（生产用 D1 的 samples 表） */
+const localSamples: Record<string, unknown>[] = []
+let localSampleSeq = 1
 
 /** 本地开发：把 /api/generate 转发到 server/generate.mjs（生产用 Cloudflare Function） */
 function localGenerateApi(
@@ -72,6 +75,7 @@ function localGenerateApi(
               kimiBaseUrl: kimiBaseUrl || 'https://api.moonshot.cn/v1',
             }).then((r) => {
               localReviews.set(reviewId, {
+                _id: reviewId,
                 reviewId,
                 status: r.verdict ? 'done' : 'error',
                 provider: r.provider,
@@ -98,10 +102,56 @@ function localGenerateApi(
 
       // /api/review：本地内存版（生产走 D1 的 reviews 表）
       server.middlewares.use('/api/review', (req: any, res: any) => {
-        const id = new URL(req.url ?? '', 'http://localhost').searchParams.get('id')
+        const sp = new URL(req.url ?? '', 'http://localhost').searchParams
+        const id = sp.get('id')
         res.statusCode = 200
         res.setHeader('Content-Type', 'application/json')
+        if (req.method === 'DELETE') {
+          if (sp.get('all') === '1') {
+            localReviews.clear()
+            res.end(JSON.stringify({ ok: true, deleted: 'all' }))
+          } else {
+            if (id) localReviews.delete(id)
+            res.end(JSON.stringify({ ok: true, deleted: id }))
+          }
+          return
+        }
         res.end(JSON.stringify(id ? (localReviews.get(id) ?? { status: 'pending' }) : [...localReviews.values()]))
+      })
+
+      // /api/collect：本地内存版（生产走 D1 的 samples 表）
+      server.middlewares.use('/api/collect', (req: any, res: any) => {
+        const sp = new URL(req.url ?? '', 'http://localhost').searchParams
+        const send = (code: number, data: unknown) => {
+          res.statusCode = code
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(data))
+        }
+        if (req.method === 'DELETE') {
+          if (sp.get('all') === '1') {
+            localSamples.length = 0
+            return send(200, { ok: true, deleted: 'all' })
+          }
+          const id = Number(sp.get('id'))
+          const i = localSamples.findIndex((s) => s._id === id)
+          if (i >= 0) localSamples.splice(i, 1)
+          return send(200, { ok: true, deleted: id })
+        }
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (c: Buffer) => (body += c))
+          req.on('end', () => {
+            try {
+              const payload = JSON.parse(body || '{}')
+              localSamples.push({ ...payload, _id: localSampleSeq++ })
+              send(200, { ok: true })
+            } catch (e) {
+              send(500, { error: e instanceof Error ? e.message : String(e) })
+            }
+          })
+          return
+        }
+        send(200, localSamples)
       })
     },
   }

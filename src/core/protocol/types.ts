@@ -7,7 +7,8 @@ export const FRAME = {
   pose: 0x01, // 姿态帧 50Hz
   event: 0x02, // 事件帧（判姿报警）
   ack: 0x80, // ACK（回显动作类型）
-  startAction: 0x82, // 开始动作（目标姿态帧，下行唯一指令）
+  startAction: 0x82, // 开始动作（目标姿态帧，下发目标姿态）
+  stopAction: 0x83, // 停止采集（App 数够预设次数后下发，MCU 收到即停止上行）
 } as const
 
 // 0x01 姿态帧

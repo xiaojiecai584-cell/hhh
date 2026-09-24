@@ -145,6 +145,14 @@ export function encodeStartAction(target: ImuTarget): Uint8Array {
   return encodeFrame(FRAME.startAction, p)
 }
 
+/**
+ * 编码 0x83 停止采集：无载荷，共 4 字节 `AA 83 SUM 55`。
+ * App 侧统计动作次数达标后下发，MCU 收到即停止上行采集。
+ */
+export function encodeStopAction(): Uint8Array {
+  return encodeFrame(FRAME.stopAction, new Uint8Array(0))
+}
+
 /** 解码 0x82（供虚拟设备解析） */
 export function parseImuTarget(frame: Uint8Array): ImuTarget {
   return {

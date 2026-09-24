@@ -17,6 +17,7 @@ interface CollectItem {
   actionId?: number
   actionName?: string
   annotations?: { code: string; severity?: string }[]
+  keyframes?: unknown[]
   // vision_review
   provider?: string
   correct?: boolean | null
@@ -81,7 +82,10 @@ export default function RepoPage() {
   }
 
   const sensors = (items ?? []).filter((i) => i.kind === 'sensor_sample')
-  const motions = (items ?? []).filter((i) => i.kind === 'motion_params')
+  // 兼容早期没带 kind 的生成样本（靠 keyframes 字段识别）
+  const motions = (items ?? []).filter(
+    (i) => i.kind === 'motion_params' || (!i.kind && Array.isArray(i.keyframes)),
+  )
   const standard = sensors.filter((s) => Array.isArray(s.annotations) && s.annotations.length === 0)
   const nonStandard = sensors.filter((s) => Array.isArray(s.annotations) && s.annotations.length > 0)
 

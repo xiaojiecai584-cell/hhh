@@ -3,7 +3,7 @@ import type { BLETransport, TransportKind, TransportState } from '../core/ble/tr
 import { WebBluetoothTransport } from '../core/ble/webBluetooth'
 import { VirtualDeviceTransport } from '../core/ble/virtualDevice'
 import { useBleConfigStore } from './useBleConfigStore'
-import { encodeStartAction, toHex } from '../core/protocol/codec'
+import { encodeStartAction, encodeStopAction, toHex } from '../core/protocol/codec'
 import {
   ACTION_NAMES,
   FRAME,
@@ -68,12 +68,16 @@ interface BleState {
   error: string | null
   recording: boolean
   recordingCount: number
+  repCount: number
+  targetReps: number
   currentActionId: number | null
   pending: PendingRecord | null
   setKind: (kind: TransportKind) => void
   connect: () => Promise<void>
   disconnect: () => Promise<void>
   sendStartAction: (target: ImuTarget, label?: string) => Promise<void>
+  sendStopAction: (label?: string) => Promise<void>
+  setTargetReps: (n: number) => void
   startRecording: () => void
   stopRecording: () => void
   submitSegments: (labels: (ManualLabel | null)[]) => Promise<void>
@@ -88,6 +92,9 @@ let seq = 0
 let recordBuffer: SensorSample[] = []
 let segmentRanges: SegmentRange[] = []
 let recordingFlag = false
+let targetRepsFlag = 0 // 本组目标次数（0 = 不限）
+let lastCountAt = 0 // 上次统计次数时的采样点位置
+let autoStopping = false // 防止自动停止重入
 
 function attach(t: BLETransport) {
   cleanups.forEach((f) => f())
@@ -113,6 +120,20 @@ function attach(t: BLETransport) {
           gy: frame.gyDps,
           gz: frame.gzDps,
         })
+        // 每 ~0.5s（25 个采样点）重算一次动作次数；达标则自动下发「停止采集」
+        if (!autoStopping && recordBuffer.length - lastCountAt >= 25) {
+          lastCountAt = recordBuffer.length
+          const count = segmentMotion(recordBuffer).length
+          if (count !== useBleStore.getState().repCount) useBleStore.setState({ repCount: count })
+          if (targetRepsFlag > 0 && count >= targetRepsFlag) {
+            autoStopping = true
+            void (async () => {
+              await useBleStore.getState().sendStopAction(`达标 ${targetRepsFlag} 次 · 停止采集 (0x83)`)
+              useBleStore.getState().stopRecording()
+              autoStopping = false
+            })()
+          }
+        }
       }
       useBleStore.setState((s) => {
         const rxCounts = { pose: s.rxCounts.pose, event: s.rxCounts.event, ack: s.rxCounts.ack }
@@ -144,6 +165,7 @@ function attach(t: BLETransport) {
     rxCounts: { pose: 0, event: 0, ack: 0 },
     recording: false,
     recordingCount: 0,
+    repCount: 0,
     pending: null,
   })
 }
@@ -161,6 +183,8 @@ export const useBleStore = create<BleState>((set) => ({
   error: null,
   recording: false,
   recordingCount: 0,
+  repCount: 0,
+  targetReps: 0,
   currentActionId: null,
   pending: null,
 
@@ -205,11 +229,31 @@ export const useBleStore = create<BleState>((set) => ({
     }
   },
 
+  sendStopAction: async (label) => {
+    if (!active) return
+    const bytes = encodeStopAction()
+    try {
+      await active.send(bytes)
+      set((s) => ({
+        txLog: [...s.txLog, { id: seq++, hex: toHex(bytes), label: label ?? '停止采集 (0x83)' }].slice(-50),
+      }))
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) })
+    }
+  },
+
+  setTargetReps: (n) => {
+    targetRepsFlag = Math.max(0, Math.floor(n) || 0)
+    set({ targetReps: targetRepsFlag })
+  },
+
   startRecording: () => {
     recordBuffer = []
     segmentRanges = []
     recordingFlag = true
-    set({ recording: true, recordingCount: 0, pending: null })
+    lastCountAt = 0
+    autoStopping = false
+    set({ recording: true, recordingCount: 0, repCount: 0, pending: null })
   },
 
   stopRecording: () => {

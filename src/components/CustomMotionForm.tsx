@@ -261,6 +261,7 @@ export default function CustomMotionForm({ initial, onSaved }: CustomMotionFormP
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          kind: 'motion_params',
           description: genDesc.trim() || null,
           name: t.name,
           basePosture: t.basePosture,

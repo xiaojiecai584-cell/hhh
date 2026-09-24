@@ -83,6 +83,12 @@ export class VirtualDeviceTransport implements BLETransport {
       this.running = true
       this.emitAck(this.actionId)
       this.startReps()
+      return
+    }
+    if (type === FRAME.stopAction) {
+      // 0x83 停止采集：停止上行（0x01 姿态流与 0x02 事件）
+      this.running = false
+      this.stopReps()
     }
   }
 

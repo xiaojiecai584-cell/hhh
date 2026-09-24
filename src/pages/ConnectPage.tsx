@@ -429,7 +429,7 @@ export default function ConnectPage() {
               )}
               <div className="btn-grid" style={{ marginTop: 10 }}>
                 {recording ? (
-                  <button className="btn" onClick={stopRecording}>
+                  <button className="btn" onClick={() => stopRecording()}>
                     停止录制
                   </button>
                 ) : (

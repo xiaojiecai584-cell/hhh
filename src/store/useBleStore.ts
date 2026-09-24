@@ -79,7 +79,7 @@ interface BleState {
   sendStopAction: (label?: string) => Promise<void>
   setTargetReps: (n: number) => void
   startRecording: () => void
-  stopRecording: () => void
+  stopRecording: (label?: string) => void
   submitSegments: (labels: (ManualLabel | null)[]) => Promise<void>
   discardPending: () => void
   clearEvents: () => void
@@ -127,11 +127,8 @@ function attach(t: BLETransport) {
           if (count !== useBleStore.getState().repCount) useBleStore.setState({ repCount: count })
           if (targetRepsFlag > 0 && count >= targetRepsFlag) {
             autoStopping = true
-            void (async () => {
-              await useBleStore.getState().sendStopAction(`达标 ${targetRepsFlag} 次 · 停止采集 (0x83)`)
-              useBleStore.getState().stopRecording()
-              autoStopping = false
-            })()
+            useBleStore.getState().stopRecording(`达标 ${targetRepsFlag} 次 · 停止采集 (0x83)`)
+            autoStopping = false
           }
         }
       }
@@ -256,9 +253,11 @@ export const useBleStore = create<BleState>((set) => ({
     set({ recording: true, recordingCount: 0, repCount: 0, pending: null })
   },
 
-  stopRecording: () => {
+  stopRecording: (label) => {
     const actionId = useBleStore.getState().currentActionId ?? 1
     recordingFlag = false
+    // 无论手动停止还是达标自动停止，都通知设备停止采集
+    void useBleStore.getState().sendStopAction(label ?? '停止录制 · 停止采集 (0x83)')
     segmentRanges = segmentMotion(recordBuffer)
     const segments = segmentRanges.map((r) => describeSegment(recordBuffer, r))
     set({

@@ -180,7 +180,8 @@ function attach(t: BLETransport) {
 }
 
 export const useBleStore = create<BleState>((set) => ({
-  kind: 'virtual',
+  // 用户界面默认连真机；虚拟设备只在调试站（#/debug）里切换使用
+  kind: 'web',
   state: 'disconnected',
   deviceName: null,
   latestPose: null,
@@ -345,5 +346,5 @@ export const useBleStore = create<BleState>((set) => ({
   clearRawRx: () => set({ rawRx: [], rxCounts: { pose: 0, event: 0, ack: 0 } }),
 }))
 
-// 初始化默认虚拟设备
-attach(new VirtualDeviceTransport())
+// 初始传输层：真机（Web 蓝牙）。调试站可切到虚拟设备。
+attach(new WebBluetoothTransport(() => useBleConfigStore.getState().config))

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useAppStore, type TabId } from '../store/useAppStore'
+import { DEBUG_TABS, MAIN_TABS, useAppStore, type TabId } from '../store/useAppStore'
 
 function Icon({ children }: { children: ReactNode }) {
   return (
@@ -61,30 +61,32 @@ const ICONS: Record<TabId, ReactNode> = {
   ),
 }
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'connect', label: '连接' },
-  { id: 'body', label: '身体' },
-  { id: 'motion', label: '动作' },
-  { id: 'demo', label: '演示' },
-  { id: 'report', label: '报告' },
-  { id: 'data', label: '数据' },
-  { id: 'repo', label: '仓库' },
-]
+const LABELS: Record<TabId, string> = {
+  connect: '训练',
+  body: '我的',
+  motion: '动作',
+  demo: '演示',
+  report: '报告',
+  data: '数据',
+  repo: '仓库',
+}
 
 export default function TabBar() {
   const tab = useAppStore((s) => s.tab)
+  const route = useAppStore((s) => s.route)
   const setTab = useAppStore((s) => s.setTab)
+  const ids = route === 'debug' ? DEBUG_TABS : MAIN_TABS
 
   return (
     <nav className="tabbar">
-      {TABS.map((t) => (
+      {ids.map((id) => (
         <button
-          key={t.id}
-          className={`tabbar__item${tab === t.id ? ' tabbar__item--active' : ''}`}
-          onClick={() => setTab(t.id)}
+          key={id}
+          className={`tabbar__item${tab === id ? ' tabbar__item--active' : ''}`}
+          onClick={() => setTab(id)}
         >
-          <Icon>{ICONS[t.id]}</Icon>
-          <span>{t.label}</span>
+          <Icon>{ICONS[id]}</Icon>
+          <span>{LABELS[id]}</span>
         </button>
       ))}
     </nav>

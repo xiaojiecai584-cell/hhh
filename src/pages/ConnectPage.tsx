@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useBleStore, type LoggedEvent, type ManualLabel } from '../store/useBleStore'
-import { useAppStore } from '../store/useAppStore'
 import { useBleConfigStore } from '../store/useBleConfigStore'
 import { useBodyStore } from '../store/useBodyStore'
 import { ACTION_NAMES } from '../core/protocol/types'
@@ -23,9 +22,8 @@ const ERROR_LABEL: Record<string, string> = {
 }
 const ERROR_CODES = Object.keys(ERROR_LABEL)
 
+/** 调试站专用：连接调试、BLE 地址、原始帧、录制标注。用户界面见 TrainingPage。 */
 export default function ConnectPage() {
-  const route = useAppStore((s) => s.route)
-  const isDebug = route === 'debug'
   const kind = useBleStore((s) => s.kind)
   const state = useBleStore((s) => s.state)
   const deviceName = useBleStore((s) => s.deviceName)
@@ -66,22 +64,6 @@ export default function ConnectPage() {
   const [segLabels, setSegLabels] = useState<Record<number, ManualLabel>>({})
   const [deletedSegs, setDeletedSegs] = useState<Set<number>>(new Set())
   const sendingRef = useRef(false)
-
-  // ---- 用户界面（极简训练页）本地状态 ----
-  const [selected, setSelected] = useState<number>(MOTION_TEMPLATES[0]?.actionId ?? 1)
-  const [elapsedMs, setElapsedMs] = useState(0)
-
-  // 一组进行中时走表；结束后归零
-  useEffect(() => {
-    if (!setActive) {
-      setElapsedMs(0)
-      return
-    }
-    const t0 = Date.now()
-    setElapsedMs(0)
-    const id = setInterval(() => setElapsedMs(Date.now() - t0), 200)
-    return () => clearInterval(id)
-  }, [setActive])
 
   useEffect(() => {
     setSegLabels({})
@@ -152,108 +134,6 @@ export default function ConnectPage() {
     setBusy(true)
     await disconnect()
     setBusy(false)
-  }
-
-  // 中途停止与达标停止走**同一条结束指令**（0x83），不做区分；
-  // "为什么停"只记在本地，供以后做数据集时区分「做满」和「手动中断」。
-  const toggleSet = () => {
-    if (useBleStore.getState().setActive) void sendStopAction('结束本组 (0x83)')
-    else void startPreset(selected)
-  }
-
-  const fmtElapsed = (ms: number) => {
-    const s = Math.floor(ms / 1000)
-    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-  }
-
-  /* ---------- 用户界面：设备状态 + 选动作 + 大号计数 + 一个开始/结束按钮 ---------- */
-  if (!isDebug) {
-    const t = MOTION_TEMPLATES.find((x) => x.actionId === selected) ?? MOTION_TEMPLATES[0]
-    const reached = targetReps > 0 && repCount >= targetReps
-    return (
-      <div className="page">
-        <div className="card">
-          <div className="row">
-            <div>
-              <span className={`badge badge--${state}`}>{STATE_LABEL[state]}</span>
-              <div className="muted" style={{ marginTop: 6, fontSize: 13 }}>
-                {deviceName ?? (kind === 'web' ? 'Lindoway 智能哑铃' : '虚拟设备')}
-              </div>
-            </div>
-            {isConnected ? (
-              <button className="btn btn--ghost" onClick={doDisconnect} disabled={busy}>
-                断开
-              </button>
-            ) : (
-              <button className="btn" onClick={doConnect} disabled={busy || state === 'connecting'}>
-                {state === 'connecting' ? '连接中…' : '连接设备'}
-              </button>
-            )}
-          </div>
-          {error && (
-            <div className="error" style={{ marginTop: 10 }}>
-              {error}
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <h3 className="card__title">选择动作</h3>
-          <div className="seg" style={{ marginTop: 10 }}>
-            {MOTION_TEMPLATES.map((x) => (
-              <button
-                key={x.id}
-                className={`seg__btn${selected === x.actionId ? ' seg__btn--active' : ''}`}
-                onClick={() => setSelected(x.actionId)}
-                disabled={setActive}
-              >
-                {x.name}
-              </button>
-            ))}
-          </div>
-          <div className="train__target">
-            <span>本组目标次数</span>
-            <input
-              className="input input--num"
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={999}
-              value={targetReps}
-              disabled={setActive}
-              onChange={(e) => setTargetReps(Number(e.target.value))}
-            />
-            <span>次（0 = 不限）</span>
-          </div>
-        </div>
-
-        <div className="card train">
-          <div className="train__name">{t?.name}</div>
-          <div className="train__counter">
-            <span className="train__count">{repCount}</span>
-            <span className="train__of">{targetReps > 0 ? `/ ${targetReps}` : '次'}</span>
-          </div>
-          <div className="train__timer">{setActive ? fmtElapsed(elapsedMs) : '准备开始'}</div>
-          {setActive && targetReps > 0 && (
-            <div className="train__bar">
-              <div
-                className="train__bar-fill"
-                style={{ width: `${Math.min(100, (repCount / targetReps) * 100)}%` }}
-              />
-            </div>
-          )}
-          <button
-            className={`btn btn--xl${setActive ? ' btn--stop' : ''}`}
-            onClick={toggleSet}
-            disabled={!isConnected || busy}
-          >
-            {setActive ? '结束' : '开始'}
-          </button>
-          {!isConnected && <div className="train__hint">请先连接设备</div>}
-          {reached && <div className="train__hint">已达标，正在结束本组…</div>}
-        </div>
-      </div>
-    )
   }
 
   return (

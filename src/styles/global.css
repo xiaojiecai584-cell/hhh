@@ -658,3 +658,114 @@ button {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- 运动进行中：全屏界面（盖住顶栏与底部导航） ---------- */
+.live {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(env(safe-area-inset-top, 0px) + 26px) 24px
+    calc(env(safe-area-inset-bottom, 0px) + 26px);
+  background: radial-gradient(120% 70% at 50% 0%, #16263a 0%, var(--bg) 62%);
+  animation: live-in 0.22s ease-out;
+}
+
+@keyframes live-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
+.live__top {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.live__name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-2);
+  letter-spacing: 0.4px;
+}
+
+.live__clock {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.live__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.live__count {
+  font-size: clamp(110px, 34vw, 190px);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 60px var(--accent-glow);
+}
+
+.live__unit {
+  margin-top: 6px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.live__bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.live__bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.live__hint {
+  height: 18px;
+  font-size: 13px;
+  color: var(--text-3);
+  margin-bottom: 14px;
+}
+
+.live__stop {
+  width: 100%;
+  height: 62px;
+  flex: none;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--danger);
+  color: #2a0505;
+  font-family: inherit;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 5px;
+  transition: transform 0.06s ease, filter 0.15s ease;
+}
+
+.live__stop:active {
+  transform: scale(0.985);
+  filter: brightness(0.92);
+}

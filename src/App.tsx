@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { DEBUG_TABS, MAIN_TABS, useAppStore, type TabId } from './store/useAppStore'
 import TabBar from './components/TabBar'
 import ConnectPage from './pages/ConnectPage'
+import TrainingPage from './pages/TrainingPage'
 import BodyPage from './pages/BodyPage'
 import MotionPage from './pages/MotionPage'
 import DemoPage from './pages/DemoPage'
@@ -36,7 +37,9 @@ export default function App() {
   const ids = route === 'debug' ? DEBUG_TABS : MAIN_TABS
   const active = ids.includes(tab) ? tab : ids[0]
   const meta = META[active]
-  const Page = PAGES[active]
+  // 训练页分两套实现：用户界面（TrainingPage）与调试站（ConnectPage）。
+  // 拆开的另一个好处是用户界面不再订阅 50Hz 的姿态数据，不会每 20ms 重渲一次。
+  const Page = active === 'connect' && route !== 'debug' ? TrainingPage : PAGES[active]
 
   return (
     <div className={`app app--${route}`}>

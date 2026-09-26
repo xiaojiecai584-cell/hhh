@@ -44,6 +44,8 @@ export default function ConnectPage() {
   const repCount = useBleStore((s) => s.repCount)
   const targetReps = useBleStore((s) => s.targetReps)
   const setTargetReps = useBleStore((s) => s.setTargetReps)
+  const setActive = useBleStore((s) => s.setActive)
+  const sendStopAction = useBleStore((s) => s.sendStopAction)
   const currentActionId = useBleStore((s) => s.currentActionId)
   const pending = useBleStore((s) => s.pending)
   const startRecording = useBleStore((s) => s.startRecording)
@@ -260,7 +262,26 @@ export default function ConnectPage() {
 
       {isConnected && (
         <div className="card">
-          <h3 className="card__title">指令下发</h3>
+          <div className="row">
+            <h3 className="card__title">指令下发</h3>
+            <span className="chip">
+              {setActive
+                ? `本组进行中 ${repCount} 次${targetReps > 0 ? `/${targetReps}` : ''}`
+                : '待机'}
+            </span>
+          </div>
+          <label className="field" style={{ marginTop: 10 }}>
+            <span className="field__label">本组目标次数（0 = 不限，需手动停止）</span>
+            <input
+              className="input"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={999}
+              value={targetReps}
+              onChange={(e) => setTargetReps(Number(e.target.value))}
+            />
+          </label>
           <div className="btn-grid" style={{ marginTop: 10 }}>
             {MOTION_TEMPLATES.map((t) => (
               <button
@@ -273,6 +294,17 @@ export default function ConnectPage() {
               </button>
             ))}
           </div>
+          {setActive && (
+            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+              已识别 <b>{repCount}</b> 次{targetReps > 0 ? ` / 目标 ${targetReps} 次` : ''}
+              {targetReps > 0 && repCount >= targetReps ? ' —— 已达标，正在下发 0x83…' : ''}
+            </div>
+          )}
+          {setActive && (
+            <button className="btn btn--ghost" style={{ marginTop: 8, width: '100%' }} onClick={() => void sendStopAction()}>
+              停止采集（下发 0x83）
+            </button>
+          )}
           {txLog.length > 0 && (
             <div className="log-list" style={{ marginTop: 12 }}>
               {[...txLog].reverse().map((t) => (
@@ -320,7 +352,7 @@ export default function ConnectPage() {
             <h3 className="card__title">动作录制与标注</h3>
             <span className="chip">
               {recording
-                ? `录制中 ${repCount} 次${targetReps > 0 ? `/${targetReps}` : ''} · ${recordingCount} 点`
+                ? `录制中 · ${recordingCount} 点`
                 : pending
                   ? `${pending.actionName} · ${pending.segments.length} 段`
                   : currentActionId
@@ -406,25 +438,11 @@ export default function ConnectPage() {
           ) : (
             <>
               <p className="card__desc" style={{ marginTop: 8 }}>
-                先「开始·动作」下发指令，再点「开始录制」做一组动作。达到「本组目标次数」后会自动下发 0x83 停止采集并结束录制，然后逐段标注入库。
+                录制仅用于「暂时采集数据」：点「开始录制」开始采集，点「停止录制」后自动切分成单次、逐段标注「标准 / 不标准 + 错误码」并入库。
               </p>
-              <label className="field" style={{ marginTop: 10 }}>
-                <span className="field__label">本组目标次数（0 = 不限，手动停止）</span>
-                <input
-                  className="input"
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  max={999}
-                  value={targetReps}
-                  onChange={(e) => setTargetReps(Number(e.target.value))}
-                />
-              </label>
               {recording && (
                 <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                  已识别 <b>{repCount}</b> 次{targetReps > 0 ? ` / 目标 ${targetReps} 次` : ''} · 已缓存{' '}
-                  {recordingCount} 个采样点
-                  {targetReps > 0 && repCount >= targetReps ? ' —— 已达标，正在下发停止…' : ''}
+                  采集中 · 已缓存 {recordingCount} 个采样点
                 </div>
               )}
               <div className="btn-grid" style={{ marginTop: 10 }}>

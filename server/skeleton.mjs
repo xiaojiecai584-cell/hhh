@@ -32,6 +32,14 @@ function rotZ(v, th) {
   const s = Math.sin(th)
   return v3(v.x * c - v.y * s, v.x * s + v.y * c, v.z)
 }
+// 绕 Y 轴旋转（Z-X 平面）
+function rotY(v, th) {
+  const c = Math.cos(th)
+  const s = Math.sin(th)
+  return v3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c)
+}
+/** 肩外展带来的大臂自然外旋（上限 ±90°），与前端 types.shoulderTwistDeg 一致 */
+const shoulderTwistDeg = (ab) => Math.max(-90, Math.min(90, ab))
 
 function peakAngles(basePose, moves) {
   const a = { ...basePose }
@@ -40,25 +48,34 @@ function peakAngles(basePose, moves) {
 }
 
 // 正向运动学：髋为原点，+Y 上、+Z 前、+X 右（与前端 groundContact.ts 同约定）
-function buildSkeleton(a) {
+export function buildSkeleton(a) {
   const torso = rad(a.torsoFlexion)
   const neck = rotX(v3(0, P.torso, 0), torso)
   const head = rotX(v3(0, P.torso + P.head, 0), torso)
   const limbs = []
   for (const side of [1, -1]) {
     const shoulder = rotX(v3(side * P.shoulderHalf, P.torso, 0), torso)
-    // 上臂方向：(0,-1,0) → 躯干旋转 → 肩（先绕X屈，再绕Z外展）
-    let upperDir = rotX(v3(0, -1, 0), torso)
-    upperDir = rotX(upperDir, rad(-a.shoulderFlexion))
-    upperDir = rotZ(upperDir, rad(side * a.shoulderAbduction))
+    const tw = rad(side * shoulderTwistDeg(a.shoulderAbduction))
+    const flex = rad(-a.shoulderFlexion)
+    const abd = rad(side * a.shoulderAbduction)
+    // 上臂 = Rx(躯干) ∘ Rz(外展) ∘ Rx(屈) ∘ Ry(外旋) 作用于 (0,-1,0)
+    let upperDir = rotY(v3(0, -1, 0), tw)
+    upperDir = rotX(upperDir, flex)
+    upperDir = rotZ(upperDir, abd)
+    upperDir = rotX(upperDir, torso)
     const elbow = addScaled(shoulder, upperDir, P.upperArm)
-    const foreDir = rotX(upperDir, rad(-a.elbowFlexion))
+    // 前臂 = 上臂链前再叠一层肘屈（最内层）
+    let foreDir = rotX(v3(0, -1, 0), rad(-a.elbowFlexion))
+    foreDir = rotY(foreDir, tw)
+    foreDir = rotX(foreDir, flex)
+    foreDir = rotZ(foreDir, abd)
+    foreDir = rotX(foreDir, torso)
     const hand = addScaled(elbow, foreDir, P.forearm)
 
     const hip = v3(side * P.hipHalf, 0, 0)
     const thighDir = rotX(v3(0, -1, 0), rad(-a.hipFlexion))
     const knee = addScaled(hip, thighDir, P.thigh)
-    const shinDir = rotX(thighDir, rad(a.kneeFlexion))
+    const shinDir = rotX(rotX(v3(0, -1, 0), rad(a.kneeFlexion)), rad(-a.hipFlexion))
     const ankle = addScaled(knee, shinDir, P.shin)
     const toe = add(ankle, v3(0, 0, P.foot))
 

@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { ResolvedSegments } from '../body/bodyProfile'
-import type { BasePosture, JointAngles } from './types'
+import { shoulderTwistDeg, type BasePosture, type JointAngles } from './types'
 
 export const ZERO_ANGLES: JointAngles = {
   torsoFlexion: 0,
@@ -17,9 +17,15 @@ function qx(deg: number) {
   return new THREE.Quaternion().setFromEuler(new THREE.Euler(rad(deg), 0, 0, 'XYZ'))
 }
 function qShoulder(a: JointAngles) {
-  return new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(rad(-a.shoulderFlexion), 0, rad(a.shoulderAbduction), 'XYZ'),
-  )
+  // 肩 = Rz(外展) ∘ Rx(屈) ∘ Ry(大臂外旋)，与 pose.ts / kinematics.ts 完全一致
+  return new THREE.Quaternion()
+    .setFromEuler(new THREE.Euler(0, 0, rad(a.shoulderAbduction), 'XYZ'))
+    .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(rad(-a.shoulderFlexion), 0, 0, 'XYZ')))
+    .multiply(
+      new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(0, rad(shoulderTwistDeg(a.shoulderAbduction)), 0, 'XYZ'),
+      ),
+    )
 }
 function qElbow(a: JointAngles) {
   return qx(-a.elbowFlexion)
@@ -36,6 +42,7 @@ function qTorso(a: JointAngles) {
 
 interface Landmarks {
   shoulder: THREE.Vector3
+  elbow: THREE.Vector3
   hand: THREE.Vector3
   ankle: THREE.Vector3
   toe: THREE.Vector3
@@ -50,20 +57,24 @@ export function computeLandmarks(seg: ResolvedSegments, a: JointAngles): Landmar
   const kneeQ = qKnee(a)
 
   // 手臂链：躯干 → 肩 → 上臂 → 肘 → 前臂 → 手
+  // 注意：applyQuaternion 需从最内层关节往外叠，即 v.applyQuaternion(child).applyQuaternion(parent)
   const shoulder = new THREE.Vector3(0, seg.torsoLen, 0).applyQuaternion(torsoQ)
-  const upperDir = new THREE.Vector3(0, -1, 0).applyQuaternion(torsoQ).applyQuaternion(shoulderQ)
+  const upperDir = new THREE.Vector3(0, -1, 0).applyQuaternion(shoulderQ).applyQuaternion(torsoQ)
   const elbow = shoulder.clone().addScaledVector(upperDir, seg.upperArmLen)
-  const foreDir = upperDir.clone().applyQuaternion(elbowQ)
+  const foreDir = new THREE.Vector3(0, -1, 0)
+    .applyQuaternion(elbowQ)
+    .applyQuaternion(shoulderQ)
+    .applyQuaternion(torsoQ)
   const hand = elbow.clone().addScaledVector(foreDir, seg.forearmLen)
 
   // 腿链：髋 → 大腿 → 膝 → 小腿 → 踝 → 脚尖
   const thighDir = new THREE.Vector3(0, -1, 0).applyQuaternion(hipQ)
   const knee = thighDir.clone().multiplyScalar(seg.thighLen)
-  const shinDir = thighDir.clone().applyQuaternion(kneeQ)
+  const shinDir = new THREE.Vector3(0, -1, 0).applyQuaternion(kneeQ).applyQuaternion(hipQ)
   const ankle = knee.clone().addScaledVector(shinDir, seg.shinLen)
   const toe = ankle.clone().add(new THREE.Vector3(0, 0, seg.shinLen * 0.3))
 
-  return { shoulder, hand, ankle, toe }
+  return { shoulder, elbow, hand, ankle, toe }
 }
 
 /**

@@ -43,6 +43,17 @@ export const SYSTEM_PROMPT = `你是健身动作参数化编译器。根据用�
 2. 上肢主导动作（主运动肩/肘）：下肢自然微屈稳定（hipFlexion/kneeFlexion 5~15）；躯干自然直立（torsoFlexion 0）。
 3. 俯卧/仰卧：躯干与腿保持刚性直线。
 
+关节几何（通用规则，任何动作都必须遵守，否则渲染出的姿势一定是错的）：
+- 「肩屈」与「肩外展」是两条正交的抬臂通路，选错通路手会跑到完全错误的方向：
+  · 手臂在**身体正前方**抬起/落下（前平举、前推、俯卧撑支撑）→ 只用 shoulderFlexion，shoulderAbduction 必须为 0。
+  · 手臂在**身体两侧（额状面）**抬起/落下（侧平举、推举、投降状）→ 只用 shoulderAbduction，shoulderFlexion 必须为 0。
+  · 两者同时给大值 = 斜前上方，只有斜向动作才这样用；不要用 shoulderFlexion 去"近似"侧向动作。
+- 肘的弯曲平面由大臂朝向决定（屈肘在大臂的垂直平面内弯曲），因此大臂抬到不同高度，屈肘呈现出完全不同的姿势：
+  · 大臂外展 90°（侧平举位置）时屈肘 → 前臂竖直向上，即「双手在肩两侧的投降状/推举准备位」（shoulderAbduction 90 + elbowFlexion 90）。
+  · 大臂外展 180°（过头）时屈肘 → 前臂折向脑后，不要这样组合。
+  · 大臂外展 0°（体侧下垂）时屈肘 → 前臂向前弯（弯举类）。
+- 推/举类动作（推举、肩推、上举）的起点是「肘屈、手在肩上方/两侧」，顶点是「肘伸直、手在头正上方」：用 moves 扫 shoulderAbduction（90 → 180）并同时扫 elbowFlexion（90 → 5）。不要用 shoulderFlexion 90 → 180 来做推举，那会先变成前平举。
+
 示范（仅示范格式与推理方式，动作范围不限这些）：
 
 输入「俯卧撑」→
@@ -53,6 +64,9 @@ export const SYSTEM_PROMPT = `你是健身动作参数化编译器。根据用�
 
 输入「哑铃侧平举」→
 { "name": "哑铃侧平举", "basePosture": "standing", "sensorPosition": "wrist", "speedProfile": "variable", "mainAxis": 2, "wristToleranceDeg": 15, "cadence": 30, "durationMs": 2000, "searchTerm": "dumbbell lateral raise", "basePose": { "torsoFlexion": 0, "shoulderFlexion": 0, "shoulderAbduction": 0, "elbowFlexion": 15, "hipFlexion": 5, "kneeFlexion": 5 }, "moves": [ { "joint": "shoulderAbduction", "from": 0, "to": 90 } ] }
+
+输入「坐姿推举」→
+{ "name": "坐姿推举", "basePosture": "seated", "sensorPosition": "wrist", "speedProfile": "variable", "mainAxis": 2, "wristToleranceDeg": 15, "cadence": 30, "durationMs": 2000, "searchTerm": "seated dumbbell shoulder press", "basePose": { "torsoFlexion": 0, "shoulderFlexion": 0, "shoulderAbduction": 90, "elbowFlexion": 90, "hipFlexion": 90, "kneeFlexion": 90 }, "moves": [ { "joint": "shoulderAbduction", "from": 90, "to": 180 }, { "joint": "elbowFlexion", "from": 90, "to": 5 } ] }
 
 要求：给出符合人体解剖学与标准训练姿态的合理参数；数值精确、自洽；不要编造字段；basePose 必须完整给出全部 6 个关节，不要省略、不要用 0 占位。`
 

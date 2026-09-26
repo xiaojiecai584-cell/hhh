@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import type { ResolvedSegments } from '../body/bodyProfile'
 import { computeLandmarks } from './groundContact'
-import type { BasePosture, JointAngles, SensorPosition } from './types'
+import { shoulderTwistDeg, type BasePosture, type JointAngles, type SensorPosition } from './types'
 
 const rad = (d: number) => (d * Math.PI) / 180
 const deg = (r: number) => (r * 180) / Math.PI
@@ -11,8 +11,11 @@ function eulerQ(x: number, y: number, z: number): THREE.Quaternion {
 }
 
 // 各关节旋转（与 pose.ts 的 applyPose 完全一致，右臂为参考）
+/** 肩 = Rz(外展) ∘ Rx(屈) ∘ Ry(大臂外旋)，外旋项见 types.shoulderTwistDeg */
 function shoulderQ(a: JointAngles): THREE.Quaternion {
-  return eulerQ(-a.shoulderFlexion, 0, a.shoulderAbduction)
+  return eulerQ(0, 0, a.shoulderAbduction)
+    .multiply(eulerQ(-a.shoulderFlexion, 0, 0))
+    .multiply(eulerQ(0, shoulderTwistDeg(a.shoulderAbduction), 0))
 }
 function elbowQ(a: JointAngles): THREE.Quaternion {
   return eulerQ(-a.elbowFlexion, 0, 0)

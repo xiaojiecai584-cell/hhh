@@ -11,6 +11,18 @@ export interface JointAngles {
 
 export type MainAxis = 1 | 2 | 3 | 4 | 5 // 1肩屈 2肩外展 3肘屈 4髋屈 5膝屈
 
+/**
+ * 肩外展时大臂随之产生的「自然外旋」（度），上限 ±90°。
+ *
+ * 为什么需要它：肘屈只能绕大臂自身的局部 X 轴弯曲。大臂外展 90° 后该轴变成世界 Y 轴，
+ * 于是屈肘只能让前臂在水平面内前后摆、抬不起来——真实的「投降状/哑铃推举准备位」
+ * （外展 90 + 屈肘 90 + 前臂朝上）就做不出来。人体靠大臂外旋（掌心朝前）实现。
+ * 这里是模型上的**耦合近似**（不是独立自由度）：外展多少就外旋多少，封顶 90°。
+ */
+export function shoulderTwistDeg(abductionDeg: number): number {
+  return Math.max(-90, Math.min(90, abductionDeg))
+}
+
 export type SensorPosition = 'wrist' | 'upper-arm' | 'thigh' | 'shin'
 export type BasePosture = 'standing' | 'seated' | 'prone' | 'supine'
 export type SpeedProfile = 'uniform' | 'variable' // 匀速 / 非匀速

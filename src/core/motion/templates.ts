@@ -15,9 +15,10 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     cadence: 30,
     durationMs: 2000,
     keyframes: [
+      // 起始=推举准备位：上臂前平（肩屈90）、前臂竖直向上（肘屈90）→ 手在头侧
       {
         t: 0,
-        angles: { torsoFlexion: 0, shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 90, hipFlexion: 90, kneeFlexion: 90 },
+        angles: { torsoFlexion: 0, shoulderFlexion: 90, shoulderAbduction: 0, elbowFlexion: 90, hipFlexion: 90, kneeFlexion: 90 },
         easing: 'smoothstep',
       },
       {
@@ -27,7 +28,7 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
       },
       {
         t: 1,
-        angles: { torsoFlexion: 0, shoulderFlexion: 0, shoulderAbduction: 0, elbowFlexion: 90, hipFlexion: 90, kneeFlexion: 90 },
+        angles: { torsoFlexion: 0, shoulderFlexion: 90, shoulderAbduction: 0, elbowFlexion: 90, hipFlexion: 90, kneeFlexion: 90 },
         easing: 'smoothstep',
       },
     ],

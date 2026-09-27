@@ -294,11 +294,12 @@ export class RepCounter {
 
     // 回落到位：本次结束
     this.armed = false
-    const durationMs = s.t - this.valleyT // 从最近一次谷底算起
+    const startMs = this.valleyT // 先取起点，之后再更新 valleyT
+    const durationMs = s.t - startMs
     const excursion = this.repPeak - this.repValley
     this.valley = d
     this.valleyT = s.t
-    return this.accept(excursion, durationMs, s.t, false)
+    return this.accept(excursion, durationMs, startMs, s.t, false)
   }
 
   /**
@@ -309,15 +310,27 @@ export class RepCounter {
   flush(endMs: number): RepEvent | null {
     if (!this.armed) return null
     this.armed = false
+    const startMs = this.valleyT
     const excursion = this.repPeak - this.repValley
-    const durationMs = endMs - this.valleyT
+    const durationMs = endMs - startMs
     this.valley = this.repPeak
     this.valleyT = endMs
-    return this.accept(excursion, durationMs, endMs, true)
+    return this.accept(excursion, durationMs, startMs, endMs, true)
   }
 
-  /** 门限判定 + 计数 */
-  private accept(excursion: number, durationMs: number, endMs: number, fromFlush: boolean): RepEvent | null {
+  /**
+   * 门限判定 + 计数。
+   * `startMs`/`endMs` 必须由调用方显式传入——早先这里读的是 `this.valleyT`，
+   * 而调用前它已被更新为本次结束时刻，导致返回的事件 `startMs === endMs`，
+   * 按时间切样本时每次只切到 1 个点，报告链路因此永远拿不到可用样本。
+   */
+  private accept(
+    excursion: number,
+    durationMs: number,
+    startMs: number,
+    endMs: number,
+    fromFlush: boolean,
+  ): RepEvent | null {
     if (durationMs < this.opt.minRepMs) return null
     if (durationMs > this.opt.maxRepMs) return null
     if (excursion < this.minRange()) return null
@@ -336,7 +349,7 @@ export class RepCounter {
     const twistRatio = this.repTotalPath > 0 ? this.repTwistPath / this.repTotalPath : 0
     return {
       index: this.count,
-      startMs: this.valleyT,
+      startMs,
       endMs,
       durationMs,
       rangeDeg: excursion,

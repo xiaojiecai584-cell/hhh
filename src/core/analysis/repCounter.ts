@@ -100,6 +100,18 @@ export interface RepCounterOptions {
    * （实测 #25 单次侧平举被算成 2 次）。要求回落持续一段时间即可排除。
    */
   fallHoldMs: number
+  /**
+   * 回落判定还要看姿态是否真的下来了（`d <= fallTiltRatio × 本次 d 的峰值`）。
+   *
+   * 为什么必须加这一条：**角速度模长无法区分「顶点停顿」和「底部休息」**——
+   * 两处手臂都接近静止。只用 |ω| 时，要么把顶点停顿算成一次结束（一次算成两次），
+   * 要么为避免它就要求回落很深，于是连续做、不完整放回、做得快时全被并成一次
+   * （合成测试：12 次分别只数出 4 / 4 / 1 次）。
+   * 而重力方向能区分：顶点时 d 最大，底部时 d≈0。两者结合才成立。
+   */
+  fallTiltRatio: number
+  /** 本次 d 的峰值低于它时，跳过上面的姿态判定（某些佩戴方式下 d 变化太小） */
+  fallTiltMinDeg: number
 }
 
 export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
@@ -108,7 +120,7 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   restTauMs: 800,
   minRangeDeg: 20,
   minOmegaPeakDps: 30,
-  fallFrac: 0.25,
+  fallFrac: 0.45,
   minRepMs: 700,
   maxRepMs: 15000,
   targetPeakDeg: 0,
@@ -122,6 +134,8 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   signal: 'gyro',
   omegaTauMs: 250,
   fallHoldMs: 260,
+  fallTiltRatio: 0.45,
+  fallTiltMinDeg: 8,
 }
 
 interface V3 {
@@ -178,6 +192,8 @@ export class RepCounter {
   private valleyT = 0
   private repPeak = 0
   private repValley = 0
+  /** 本次重复内 d（姿态改变量）的峰值，用于区分「顶点停顿」与「底部休息」 */
+  private repPeakD = 0
   private repOmega = 0
   private repTwistPath = 0
   private repTotalPath = 0
@@ -334,6 +350,7 @@ export class RepCounter {
         this.armed = true
         this.repValley = this.valley
         this.repPeak = metric
+        this.repPeakD = d
         this.repOmega = omegaMag
         this.repTwistPath = 0
         this.repTotalPath = 0
@@ -344,6 +361,7 @@ export class RepCounter {
     // 已武装：累积本次统计（repPeak 记平滑值的峰，用于回落判定；repOmega 记原始峰值，用于门限）
     if (metric > this.repPeak) this.repPeak = metric
     if (omegaMag > this.repOmega) this.repOmega = omegaMag
+    if (d > this.repPeakD) this.repPeakD = d
     this.repTotalPath += omegaMag * dt
     this.repTwistPath += Math.abs(dot(omega, this.g)) * dt
 
@@ -356,7 +374,10 @@ export class RepCounter {
     }
 
     const fallBelow = this.repValley + this.opt.fallFrac * (this.repPeak - this.repValley)
-    if (metric > fallBelow) {
+    // 姿态也要回到低位：顶点停顿与底部休息在 |ω| 上看起来一样，
+    // 但顶点时 d 处于本次峰值附近，底部时 d 很小
+    const tiltOk = this.repPeakD < this.opt.fallTiltMinDeg || d <= this.opt.fallTiltRatio * this.repPeakD
+    if (metric > fallBelow || !tiltOk) {
       this.fallStartT = 0 // 又抬起来了：重新计时
       return null
     }

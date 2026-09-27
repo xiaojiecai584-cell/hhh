@@ -21,7 +21,6 @@ export default function TrainingPage() {
   const connect = useBleStore((s) => s.connect)
   const disconnect = useBleStore((s) => s.disconnect)
   const sendStartAction = useBleStore((s) => s.sendStartAction)
-  const repCount = useBleStore((s) => s.repCount)
   const targetReps = useBleStore((s) => s.targetReps)
   const setTargetReps = useBleStore((s) => s.setTargetReps)
   const setActive = useBleStore((s) => s.setActive)
@@ -39,17 +38,17 @@ export default function TrainingPage() {
   // 记下本组结果，结束后显示（结束时 repCount 不会被清零，下一次开始才清）
   const startedAt = useRef(0)
   const wasActive = useRef(false)
-  const lastReps = useRef(0)
-  useEffect(() => {
-    if (setActive) lastReps.current = repCount
-  }, [repCount, setActive])
+  // 记下本组结果，结束后显示。
+  // 注意最后一个次数必须从 store 直接读：达标时「计数 +1」与「setActive=false」
+  // 是同一批更新，用 ref 缓存会读到倒数第二次的值，结果卡片就永远少 1 次
+  // （现场表现正是"总是到目标值减一"）。
   useEffect(() => {
     if (!wasActive.current && setActive) {
       startedAt.current = Date.now()
       setResult(null)
     } else if (wasActive.current && !setActive) {
       setResult({
-        reps: lastReps.current,
+        reps: useBleStore.getState().repCount,
         durationMs: Date.now() - startedAt.current,
         name: template?.name ?? '训练',
       })

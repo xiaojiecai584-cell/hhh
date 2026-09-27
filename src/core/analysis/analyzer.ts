@@ -1,5 +1,3 @@
-import type { SessionReport } from '../report/reportEngine'
-
 export interface AnalysisResult {
   score: number // 0–100
   summary: string
@@ -7,10 +5,14 @@ export interface AnalysisResult {
   anomalies: { label: string; detail: string }[]
 }
 
-/** AI 分析接口：未来接入大模型时实现并注册即可，UI/报告层零改动 */
+/**
+ * AI 分析接口：未来接入大模型时实现并注册即可，UI/报告层零改动。
+ * 注意：实际的训练指导现在走后端 `POST /api/v1/coach/advice`（见 core/api/motionAi.ts），
+ * 这个注册表是为将来在浏览器端直接接大模型预留的。
+ */
 export interface Analyzer {
   name: string
-  analyze(report: SessionReport): Promise<AnalysisResult>
+  analyze(input: unknown): Promise<AnalysisResult>
 }
 
 /** 分析器注册表（当前为空，接入大模型后在此登记） */

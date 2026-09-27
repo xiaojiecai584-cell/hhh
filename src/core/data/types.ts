@@ -1,4 +1,3 @@
-import type { SessionReport } from '../report/reportEngine'
 import type { AnalysisResult } from '../analysis/analyzer'
 import type { SetAnalysis } from '../analysis/setAnalysis'
 
@@ -8,9 +7,10 @@ export interface SessionRecord {
   startedAt: number
   actionId: number
   actionName: string
-  /** 旧：基于 0x02 事件流的报告（真机未实现 0x02 时为空） */
-  report?: SessionReport | null
-  /** 新：基于逐次动作分析（后端 /api/v1/motion/analyze 或本地规则）的整组报告 */
+  /**
+   * 整组分析结果：逐次动作分析（后端 /api/v1/motion/analyze，或本地规则分析器）的汇总。
+   * 旧版本记录用的是 0x02 事件流报告，没有这个字段；读取时按缺失处理。
+   */
   set?: SetAnalysis | null
   analysis: AnalysisResult | null
 }

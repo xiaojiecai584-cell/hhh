@@ -8,7 +8,7 @@ export default function DataPage() {
 
   const stats = useMemo(() => {
     if (sessions.length === 0) return null
-    const totalReps = sessions.reduce((a, s) => a + (s.set?.totalReps ?? s.report?.totalReps ?? 0), 0)
+    const totalReps = sessions.reduce((a, s) => a + (s.set?.totalReps ?? 0), 0)
     const scored = sessions.map((s) => s.set?.avgScore.overall).filter((v): v is number => typeof v === 'number')
     const avgScore =
       scored.length > 0
@@ -107,10 +107,7 @@ export default function DataPage() {
                       {s.set.hasHighRisk && ' · ⚠ 高风险'}
                     </>
                   ) : (
-                    <>
-                      次数 {s.report?.totalReps ?? 0} · 达标率 {((s.report?.complianceRate ?? 0) * 100).toFixed(0)}% ·
-                      代偿 {s.report?.compensationCount ?? 0}
-                    </>
+                    <>旧记录（无逐次分析数据）</>
                   )}
                   {s.analysis && <> · 评分 {s.analysis.score}</>}
                 </div>

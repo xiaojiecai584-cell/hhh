@@ -22,6 +22,10 @@ import {
 import { useSubjectStore } from './useSubjectStore'
 import { segmentMotion, describeSegment, type SegmentRange } from '../core/analysis/segmentation'
 import { RepCounter, type RepEvent } from '../core/analysis/repCounter'
+import { analyzeSet, type SetAnalysis } from '../core/analysis/setAnalysis'
+import { MOTION_TEMPLATES } from '../core/motion/templates'
+import { useApiConfigStore } from './useApiConfigStore'
+import { useDataStore } from './useDataStore'
 export type LoggedEvent = EventPacket & { id: number }
 /** 在线计数产出的每一次重复；带上该次的原始样本，供动作分析（后端 /api/v1/motion/analyze）使用 */
 export type RepRecord = RepEvent & { samples: SensorSample[] }
@@ -50,6 +54,25 @@ export interface PendingRecord {
   actionId: number
   actionName: string
   segments: PendingSegment[]
+}
+
+/** 一组的分析结果（结束时自动生成并存入历史） */
+export interface SetReport {
+  setId: string
+  actionId: number
+  actionName: string
+  analysis: SetAnalysis
+  analyzedAt: number
+  savedToHistory: boolean
+}
+
+/** 结束时对本次重复做的快照——开始下一组会清空 repEvents，快照保证还能重新分析 */
+interface SetSnapshot {
+  setId: string
+  actionId: number
+  actionName: string
+  startedAt: number
+  reps: { index: number; samples: SensorSample[] }[]
 }
 
 function fmtTime(): string {
@@ -84,6 +107,12 @@ interface BleState {
   setActive: boolean
   currentActionId: number | null
   pending: PendingRecord | null
+  /** 最近一组的分析结果（一组结束时自动生成） */
+  lastReport: SetReport | null
+  analyzing: boolean
+  analyzeError: string | null
+  /** 重新分析最近一组（例如刚配置好后端地址后想用后端重跑） */
+  analyzeLastSet: (opts?: { save?: boolean }) => Promise<void>
   setKind: (kind: TransportKind) => void
   connect: () => Promise<void>
   disconnect: () => Promise<void>
@@ -110,9 +139,14 @@ let autoStopping = false // 防止自动停止重入
 let repCounter = new RepCounter()
 let countActive = false
 let lastSampleT = 0
-/** 最近一段时间（约 20s @50Hz）的原始样本环，用于按起止时间切出每一次重复的样本 */
+/** 最近一段时间的原始样本环，用于按起止时间切出每一次重复的样本 */
 let sampleRing: SensorSample[] = []
 const SAMPLE_RING_MAX = 1000
+/** 本次运行的组号与开始时间；结束一组时用它做历史记录 id，重复保存不会产生重复条目 */
+let setId = ''
+let setStartedAt = 0
+/** 结束时的快照：开始下一组会清空 repEvents，快照保证「重新分析」还能跑 */
+let snapshot: SetSnapshot | null = null
 /** 本次 App 运行的会话号；一次采集上传共用一个 sessionId */
 const setSessionId = `session-${Date.now().toString(36)}`
 
@@ -199,6 +233,9 @@ function attach(t: BLETransport) {
     repEvents: [],
     setActive: false,
     pending: null,
+    lastReport: null,
+    analyzing: false,
+    analyzeError: null,
   })
 }
 
@@ -222,6 +259,9 @@ export const useBleStore = create<BleState>((set) => ({
   setActive: false,
   currentActionId: null,
   pending: null,
+  lastReport: null,
+  analyzing: false,
+  analyzeError: null,
 
   setKind: (kind) => {
     const prev = active
@@ -246,6 +286,8 @@ export const useBleStore = create<BleState>((set) => ({
   },
 
   disconnect: async () => {
+    // 采集途中断连也要结束本组并出报告，否则这一组数据直接丢
+    if (countActive) void useBleStore.getState().sendStopAction('连接断开 · 结束本组')
     await active?.disconnect()
     set({ deviceName: null, latestPose: null, lastAck: null })
   },
@@ -261,11 +303,16 @@ export const useBleStore = create<BleState>((set) => ({
       lastSampleT = 0
       sampleRing = []
       autoStopping = false
+      setId = `set-${Date.now().toString(36)}`
+      setStartedAt = Date.now()
+      snapshot = null
       set((s) => ({
         txLog: [...s.txLog, { id: seq++, hex: toHex(bytes), label: label ?? '开始动作' }].slice(-50),
         currentActionId: target.actionId,
         repCount: 0,
         repEvents: [],
+        lastReport: null,
+        analyzeError: null,
         setActive: true,
       }))
     } catch (e) {
@@ -289,6 +336,19 @@ export const useBleStore = create<BleState>((set) => ({
     sampleRing = []
     autoStopping = false
     set({ setActive: false })
+
+    // 结束即出报告：快照本组，然后自动分析并存入历史（不再依赖用户去报告页手动点）
+    const st = useBleStore.getState()
+    const actionId = st.currentActionId ?? 1
+    snapshot = {
+      setId: setId || `set-${Date.now().toString(36)}`,
+      actionId,
+      actionName: MOTION_TEMPLATES.find((t) => t.actionId === actionId)?.name ?? ACTION_NAMES[actionId] ?? `动作${actionId}`,
+      startedAt: setStartedAt || Date.now(),
+      reps: st.repEvents.map((r) => ({ index: r.index, samples: r.samples })),
+    }
+    void useBleStore.getState().analyzeLastSet({ save: true })
+
     if (!active) return
     const bytes = encodeStopAction()
     try {
@@ -298,6 +358,64 @@ export const useBleStore = create<BleState>((set) => ({
       }))
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) })
+    }
+  },
+
+  analyzeLastSet: async (opts) => {
+    const snap = snapshot
+    if (!snap || snap.reps.length === 0) {
+      set({ lastReport: null, analyzing: false, analyzeError: null })
+      return
+    }
+    const { subjectId, sensorPosition } = useSubjectStore.getState()
+    const baseUrl = useApiConfigStore.getState().baseUrl
+    set({ analyzing: true, analyzeError: null })
+    try {
+      const analysis = await analyzeSet(snap.reps, {
+        actionId: snap.actionId,
+        actionName: snap.actionName,
+        sensorPosition,
+        sessionId: `${snap.setId}-${subjectId}`,
+        baseUrl,
+      })
+      if (!analysis) {
+        set({ analyzing: false, lastReport: null })
+        return
+      }
+
+      let savedToHistory = false
+      if (opts?.save !== false) {
+        const errors = analysis.errors
+        useDataStore.getState().saveSession({
+          id: snap.setId,
+          startedAt: snap.startedAt,
+          actionId: snap.actionId,
+          actionName: snap.actionName,
+          set: analysis,
+          analysis: {
+            score: Math.round(analysis.avgScore.overall),
+            summary: `本组 ${analysis.totalReps} 次，可用 ${analysis.usableReps} 次，平均 ${analysis.avgScore.overall} 分`,
+            advice: errors.map((e) => `${e.code} ${e.count} 次`),
+            anomalies: errors.map((e) => ({ label: e.code, detail: `${e.count} 次` })),
+          },
+        })
+        savedToHistory = true
+      }
+
+      set({
+        analyzing: false,
+        analyzeError: analysis.backendError,
+        lastReport: {
+          setId: snap.setId,
+          actionId: snap.actionId,
+          actionName: snap.actionName,
+          analysis,
+          analyzedAt: Date.now(),
+          savedToHistory,
+        },
+      })
+    } catch (e) {
+      set({ analyzing: false, analyzeError: e instanceof Error ? e.message : String(e) })
     }
   },
 

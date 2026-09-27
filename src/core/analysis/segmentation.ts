@@ -1,4 +1,4 @@
-import type { SensorSample } from './ruleClassifier'
+import type { SensorSample } from './contract'
 
 export interface SegmentRange {
   start: number // 采样点起始索引（含）

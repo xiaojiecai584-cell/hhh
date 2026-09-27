@@ -12,11 +12,19 @@ import {
   type ImuTarget,
   type PoseFrame,
 } from '../core/protocol/types'
-import { ERROR_SEVERITY, type SensorSample } from '../core/analysis/ruleClassifier'
+import { ERROR_SEVERITY } from '../core/analysis/ruleClassifier'
+import {
+  estimateSamplingRate,
+  phaseRanges,
+  SIGNAL_CHANNELS,
+  type SensorSample,
+} from '../core/analysis/contract'
+import { useSubjectStore } from './useSubjectStore'
 import { segmentMotion, describeSegment, type SegmentRange } from '../core/analysis/segmentation'
 import { RepCounter, type RepEvent } from '../core/analysis/repCounter'
-
 export type LoggedEvent = EventPacket & { id: number }
+/** 在线计数产出的每一次重复；带上该次的原始样本，供动作分析（后端 /api/v1/motion/analyze）使用 */
+export type RepRecord = RepEvent & { samples: SensorSample[] }
 export interface TxEntry {
   id: number
   hex: string
@@ -70,8 +78,8 @@ interface BleState {
   recording: boolean
   recordingCount: number
   repCount: number
-  /** 本组已识别出的每一次重复（在线计数产出，字段对齐协议 0x02） */
-  repEvents: RepEvent[]
+  /** 本组已识别出的每一次重复（在线计数产出，字段对齐协议 0x02，并带原始样本） */
+  repEvents: RepRecord[]
   targetReps: number
   setActive: boolean
   currentActionId: number | null
@@ -102,6 +110,11 @@ let autoStopping = false // 防止自动停止重入
 let repCounter = new RepCounter()
 let countActive = false
 let lastSampleT = 0
+/** 最近一段时间（约 20s @50Hz）的原始样本环，用于按起止时间切出每一次重复的样本 */
+let sampleRing: SensorSample[] = []
+const SAMPLE_RING_MAX = 1000
+/** 本次 App 运行的会话号；一次采集上传共用一个 sessionId */
+const setSessionId = `session-${Date.now().toString(36)}`
 
 function attach(t: BLETransport) {
   cleanups.forEach((f) => f())
@@ -132,12 +145,16 @@ function attach(t: BLETransport) {
         // 次数统计（自 0x82 起常开，与录制无关）
         if (countActive) {
           lastSampleT = sample.t
+          sampleRing.push(sample)
+          if (sampleRing.length > SAMPLE_RING_MAX) sampleRing.splice(0, sampleRing.length - SAMPLE_RING_MAX)
           const ev = repCounter.push(sample)
           if (ev) {
             const count = repCounter.repCount
+            // 切出这一次重复的原始样本（时间戳落在 [startMs, endMs] 内），供动作分析使用
+            const reps = sampleRing.filter((x) => x.t >= ev.startMs && x.t <= ev.endMs)
             useBleStore.setState((s) => ({
               repCount: count,
-              repEvents: [...s.repEvents, ev].slice(-200),
+              repEvents: [...s.repEvents, { ...ev, samples: reps }].slice(-200),
             }))
             if (!autoStopping && targetRepsFlag > 0 && count >= targetRepsFlag) {
               autoStopping = true
@@ -242,6 +259,7 @@ export const useBleStore = create<BleState>((set) => ({
       repCounter = new RepCounter()
       countActive = true
       lastSampleT = 0
+      sampleRing = []
       autoStopping = false
       set((s) => ({
         txLog: [...s.txLog, { id: seq++, hex: toHex(bytes), label: label ?? '开始动作' }].slice(-50),
@@ -260,10 +278,15 @@ export const useBleStore = create<BleState>((set) => ({
     if (countActive) {
       const tail = repCounter.flush(lastSampleT || Date.now())
       if (tail) {
-        set((s) => ({ repCount: repCounter.repCount, repEvents: [...s.repEvents, tail].slice(-200) }))
+        const reps = sampleRing.filter((x) => x.t >= tail.startMs && x.t <= tail.endMs)
+        set((s) => ({
+          repCount: repCounter.repCount,
+          repEvents: [...s.repEvents, { ...tail, samples: reps }].slice(-200),
+        }))
       }
     }
     countActive = false
+    sampleRing = []
     autoStopping = false
     set({ setActive: false })
     if (!active) return
@@ -315,6 +338,8 @@ export const useBleStore = create<BleState>((set) => ({
     recordBuffer = []
     segmentRanges = []
     set({ pending: null })
+    const { subjectId, sensorPosition } = useSubjectStore.getState()
+    const sessionId = setSessionId
     try {
       await Promise.all(
         ranges.map((r, i) => {
@@ -322,7 +347,7 @@ export const useBleStore = create<BleState>((set) => ({
           if (!label) return Promise.resolve()
           const slice = buf.slice(r.start, r.end + 1)
           const dur = slice.length ? slice[slice.length - 1].t - slice[0].t : 0
-          // 统一为人工标注标准：annotations（空数组 = 标准），每项带 code/severity/startMs/endMs
+          // 人工标注：annotations 每项带 code/severity/startMs/endMs（标准 §8.1）
           const annotations = label.standard
             ? []
             : label.errorCodes.map((code) => ({
@@ -336,6 +361,21 @@ export const useBleStore = create<BleState>((set) => ({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               kind: 'sensor_sample',
+              // ---- 与 Python 后端 DatasetRecord/DatasetLabel 对齐的字段 ----
+              // 缺 label.standard 时，后端会把「无错误」的样本判成 unknown 而不是 correct，
+              // 所以标准与否必须显式写进 label。
+              label: { standard: label.standard },
+              labelSource: 'human',
+              isWeakLabel: false,
+              subjectId,
+              sessionId,
+              sensor: {
+                position: sensorPosition,
+                samplingRate: estimateSamplingRate(slice),
+                channels: [...SIGNAL_CHANNELS],
+              },
+              phases: phaseRanges(dur),
+              // ---- 网站现有字段（保持兼容） ----
               actionId: p.actionId,
               actionName: p.actionName,
               samples: slice,

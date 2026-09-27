@@ -8,16 +8,19 @@ export default function DataPage() {
 
   const stats = useMemo(() => {
     if (sessions.length === 0) return null
-    const totalReps = sessions.reduce((a, s) => a + s.report.totalReps, 0)
-    const avgCompliance = sessions.reduce((a, s) => a + s.report.complianceRate, 0) / sessions.length
+    const totalReps = sessions.reduce((a, s) => a + (s.set?.totalReps ?? s.report?.totalReps ?? 0), 0)
+    const scored = sessions.map((s) => s.set?.avgScore.overall).filter((v): v is number => typeof v === 'number')
     const avgScore =
-      sessions.reduce((a, s) => a + (s.analysis?.score ?? 0), 0) /
-      Math.max(1, sessions.filter((s) => s.analysis).length)
+      scored.length > 0
+        ? scored.reduce((a, b) => a + b, 0) / scored.length
+        : sessions.reduce((a, s) => a + (s.analysis?.score ?? 0), 0) /
+          Math.max(1, sessions.filter((s) => s.analysis).length)
+    const totalErrors = sessions.reduce((a, s) => a + (s.set?.errors.reduce((x, e) => x + e.count, 0) ?? 0), 0)
     return {
       totalSessions: sessions.length,
       totalReps,
-      avgCompliance,
       avgScore,
+      totalErrors,
     }
   }, [sessions])
 
@@ -48,8 +51,8 @@ export default function DataPage() {
               <div className="stat__label">总动作次数</div>
             </div>
             <div className="stat">
-              <div className="stat__value">{(stats.avgCompliance * 100).toFixed(0)}%</div>
-              <div className="stat__label">平均达标率</div>
+              <div className="stat__value">{stats.totalErrors}</div>
+              <div className="stat__label">累计问题次数</div>
             </div>
             <div className="stat">
               <div className="stat__value">{stats.avgScore.toFixed(0)}</div>
@@ -97,8 +100,18 @@ export default function DataPage() {
                   <span className="log-item__meta">{new Date(s.startedAt).toLocaleString()}</span>
                 </div>
                 <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
-                  次数 {s.report.totalReps} · 达标率 {(s.report.complianceRate * 100).toFixed(0)}% ·
-                  代偿 {s.report.compensationCount}
+                  {s.set ? (
+                    <>
+                      次数 {s.set.totalReps} · 可用 {s.set.usableReps} · 平均分 {s.set.avgScore.overall} ·
+                      问题 {s.set.errors.reduce((a, e) => a + e.count, 0)}
+                      {s.set.hasHighRisk && ' · ⚠ 高风险'}
+                    </>
+                  ) : (
+                    <>
+                      次数 {s.report?.totalReps ?? 0} · 达标率 {((s.report?.complianceRate ?? 0) * 100).toFixed(0)}% ·
+                      代偿 {s.report?.compensationCount ?? 0}
+                    </>
+                  )}
                   {s.analysis && <> · 评分 {s.analysis.score}</>}
                 </div>
                 {s.analysis?.summary && (

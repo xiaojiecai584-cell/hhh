@@ -1,4 +1,4 @@
-import type { SensorSample } from './ruleClassifier'
+import type { SensorSample } from './contract'
 
 /**
  * 在线重复计数（rep counter）。

@@ -12,7 +12,7 @@ import {
   type ImuTarget,
   type PoseFrame,
 } from '../core/protocol/types'
-import { ERROR_SEVERITY } from '../core/analysis/ruleClassifier'
+import { ERROR_SEVERITY, classifyMotion } from '../core/analysis/ruleClassifier'
 import {
   estimateSamplingRate,
   phaseRanges,
@@ -49,6 +49,12 @@ export interface PendingSegment {
   peak: number
   axis: string
   count: number
+  /** 稳定性残差标准差（标准 §3） */
+  stabilityStd: number
+  /** 结束点角速度（标准 §3） */
+  endpoint: number
+  /** 规则判定命中的错误码——标注时对照，但**不要**直接抄 */
+  ruleCodes: string[]
 }
 export interface PendingRecord {
   actionId: number
@@ -461,7 +467,20 @@ export const useBleStore = create<BleState>((set) => ({
     recordingFlag = false
     // 整段上传（标定计数）不需要切段——切分算法正是要被标定的对象，切了反而误导
     segmentRanges = opts?.skipSegment ? [] : segmentMotion(recordBuffer)
-    const segments = opts?.skipSegment ? [] : segmentRanges.map((r) => describeSegment(recordBuffer, r))
+    const segments = opts?.skipSegment
+      ? []
+      : segmentRanges.map((r) => {
+          const info = describeSegment(recordBuffer, r)
+          const slice = recordBuffer.slice(r.start, r.end + 1)
+          // 同时算出规则判定，供标注时对照（避免"凭感觉标注"与判据脱节）
+          const rule = classifyMotion(slice, actionId)
+          return {
+            ...info,
+            stabilityStd: rule.features.stabilityStd,
+            endpoint: rule.features.endpointAngularVelocity,
+            ruleCodes: rule.errors.map((e) => e.code),
+          }
+        })
     set({
       recording: false,
       recordingCount: 0,

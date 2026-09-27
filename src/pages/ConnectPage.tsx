@@ -3,6 +3,7 @@ import { useBleStore, CONDITION_LABEL, type LoggedEvent, type ManualLabel, type 
 import { useBleConfigStore } from '../store/useBleConfigStore'
 import { useBodyStore } from '../store/useBodyStore'
 import { ACTION_NAMES } from '../core/protocol/types'
+import { ACTION_RULES, endpointThresholdFor } from '../core/analysis/ruleClassifier'
 import { resolveSegments } from '../core/body/bodyProfile'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
 import { templateToImuTarget } from '../core/motion/imuMapping'
@@ -436,6 +437,13 @@ export default function ConnectPage() {
                   未检测到有效动作（可能录制时设备未运动），请重新录制。
                 </div>
               )}
+              {recMode !== 'whole' && pending.segments.length > 1 && (
+                <div className="error" style={{ marginTop: 8 }}>
+                  这次录到了 {pending.segments.length} 段，但「逐段（标定阈值）」要求一次录制只做一次动作。
+                  段数不等于 1 说明切分把多次并了、或把一次拆了，标注粒度会对不上——建议只保留一段，
+                  或者重录一次（做一次就停）。
+                </div>
+              )}
               {recMode !== 'whole' &&
                 pending.segments.map((seg, idx) => {
                 const deleted = deletedSegs.has(idx)
@@ -448,7 +456,7 @@ export default function ConnectPage() {
                   >
                     <div className="row">
                       <span style={{ fontWeight: 600, fontSize: 13 }}>
-                        段{idx + 1} · {seg.durationMs}ms · 峰值 {seg.peak.toFixed(0)}°/s · 轴 {seg.axis}
+                        段{idx + 1} · {seg.durationMs}ms · {seg.count} 点
                       </span>
                       <button
                         className="btn btn--ghost"
@@ -457,6 +465,30 @@ export default function ConnectPage() {
                       >
                         删除
                       </button>
+                    </div>
+
+                    {/* 实测特征 + 对应判据：标注要对着判据判，别凭感觉——
+                        上一批数据的「过慢」标签里没有一条时长真的超过 5 秒，
+                        就是因为标注时看不到判据 */}
+                    <div className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.7 }}>
+                      实测：时长 <b>{seg.durationMs}ms</b>（{'>'}5000 才算过慢、{'<'}1000 才算过快）· 主轴{' '}
+                      {seg.axis} 峰值 <b>{seg.peak.toFixed(1)}°/s</b>（动作{currentActionId ?? 1} 需 ≥{' '}
+                      {ACTION_RULES[currentActionId ?? 1]?.minPeak ?? 38}°/s）· 稳定性残差{' '}
+                      <b>{seg.stabilityStd.toFixed(2)}</b>（{'>'}7.0 才算不稳定）· 结束点{' '}
+                      <b>{seg.endpoint.toFixed(1)}°/s</b>（{'>'}{' '}
+                      {endpointThresholdFor(ACTION_RULES[currentActionId ?? 1]?.minPeak ?? 38).toFixed(1)} 才算未完整）
+                    </div>
+                    <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                      规则判定：
+                      {seg.ruleCodes.length === 0 ? (
+                        <span style={{ color: 'var(--accent)' }}> 无错误</span>
+                      ) : (
+                        <span style={{ color: 'var(--warn)' }}>
+                          {' '}
+                          {seg.ruleCodes.map((c) => ERROR_LABEL[c] ?? c).join('、')}
+                        </span>
+                      )}
+                      <span style={{ color: 'var(--text-3)' }}> —— 参考它，但以你自己的判断为准</span>
                     </div>
                     <div className="seg" style={{ marginTop: 8 }}>
                       <button

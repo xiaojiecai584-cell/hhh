@@ -82,6 +82,24 @@ export interface RepCounterOptions {
   adaptiveFloorRatio: number
   /** 单次耗时超过已计次耗时中位数的该倍数，判为「挪位置」而不是动作 */
   durationRatioLimit: number
+  /**
+   * 计数信号。
+   *  - `gravity`：相对静止姿态的重力方向改变量。适合整个肢体在重力垂直面内翻转的动作
+   *    （如站姿侧平举），实测单次识别率 77.5%。
+   *  - `gyro`：角速度模长包络。适合「只有近端关节在动、末端姿态几乎不变」的动作。
+   *    实测坐姿推举漏检 90/124，漏检样本的重力方向改变量中位数只有 8.4°（门限 20°），
+   *    而角速度峰值中位 58°/s 是够的——推举时前臂保持竖直，手腕姿态几乎不变。
+   */
+  signal: 'gravity' | 'gyro'
+  /** gyro 信号：角速度模长的平滑时间常数（ms）。用于**回落判定**，抑制顶点处的角速度回落
+   *  被误当成一次结束。不要用于武装判定——重平滑会把短促爆发削到门限以下。 */
+  omegaTauMs: number
+  /**
+   * 回落必须持续多久（ms）才算一次结束。
+   * 顶点的短暂停顿会让角速度瞬间掉到阈值以下，若立刻计数就会把一次重复算成两次
+   * （实测 #25 单次侧平举被算成 2 次）。要求回落持续一段时间即可排除。
+   */
+  fallHoldMs: number
 }
 
 export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
@@ -89,8 +107,8 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   restOmegaDps: 40,
   restTauMs: 800,
   minRangeDeg: 20,
-  minOmegaPeakDps: 40,
-  fallFrac: 0.4,
+  minOmegaPeakDps: 30,
+  fallFrac: 0.25,
   minRepMs: 700,
   maxRepMs: 15000,
   targetPeakDeg: 0,
@@ -98,6 +116,12 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   twistRatioLimit: 0.25,
   adaptiveFloorRatio: 0.6,
   durationRatioLimit: 3,
+  // 默认用 gyro：实测单次识别率明显更好（scripts/diagnose-counter.mjs）
+  // 关键在 omegaTauMs=250（更强的低通，抑制顶点处的角速度回落）与 fallFrac=0.25（回落要求更彻底）
+  // 组合效果：坐姿推举 26.6%→67.3%，站姿侧平举 70.8%→86.2%（仅计"应当计数"的样本）
+  signal: 'gyro',
+  omegaTauMs: 250,
+  fallHoldMs: 260,
 }
 
 interface V3 {
@@ -135,6 +159,18 @@ export class RepCounter {
   private count = 0
   private peaks: number[] = []
   private durations: number[] = []
+  /** 角速度模长的平滑值（gyro 信号用），抑制单点尖峰 */
+  private omegaSmooth = 0
+  /** 本次重复中「指标已回落到阈值以下」的起始时刻，0 = 未回落 */
+  private fallStartT = 0
+  private lastReject: string | null = null
+  private rejects: Record<string, number> = {}
+
+  private reject(reason: string): null {
+    this.lastReject = reason
+    this.rejects[reason] = (this.rejects[reason] ?? 0) + 1
+    return null
+  }
 
   // 当前这次重复
   private armed = false
@@ -161,6 +197,21 @@ export class RepCounter {
     return this.dNow
   }
 
+  /** 当前用于计数的标量（gravity=姿态改变量，gyro=平滑后的角速度模长） */
+  get currentMetric(): number {
+    return this.opt.signal === 'gyro' ? this.omegaSmooth : this.dNow
+  }
+
+  /** 最近一次「本该计数但被拒」的原因，供现场排查与离线诊断 */
+  get lastRejectReason(): string | null {
+    return this.lastReject
+  }
+
+  /** 各类拒因的累计次数 */
+  get rejectCounts(): Record<string, number> {
+    return { ...this.rejects }
+  }
+
   /** 当前是否处于一次重复当中 */
   get isRepInProgress(): boolean {
     return this.armed
@@ -173,6 +224,7 @@ export class RepCounter {
     this.count = 0
     this.peaks = []
     this.durations = []
+    this.omegaSmooth = 0
     this.armed = false
     this.valley = 0
     this.valleyT = 0
@@ -245,6 +297,12 @@ export class RepCounter {
     if (this.gRef === null) this.gRef = this.g
     const d = angleDeg(this.g, this.gRef)
     this.dNow = d
+    // 角速度模长的低通：单点尖峰不应该被当成一次动作
+    const ko = 1 - Math.exp(-dtMs / this.opt.omegaTauMs)
+    this.omegaSmooth += (omegaMag - this.omegaSmooth) * ko
+
+    // 计数标量：gravity 用姿态改变量，gyro 用角速度模长包络
+    const metric = this.opt.signal === 'gyro' ? this.omegaSmooth : d
 
     // --- 静止参考：只在「明显静止」时缓慢跟随；肢体离开静止就冻结 ---
     if (d <= this.opt.restFreezeDeg && omegaMag < this.opt.restOmegaDps) {
@@ -257,17 +315,25 @@ export class RepCounter {
       })
     }
 
-    // --- 峰谷自适应状态机 ---
+    // --- 峰谷自适应状态机（标量 metric：gravity=姿态改变量，gyro=角速度模长） ---
     if (!this.armed) {
       // 未武装：谷值跟随最低点
-      if (d < this.valley || this.valleyT === 0) {
-        this.valley = d
+      if (metric < this.valley || this.valleyT === 0) {
+        this.valley = metric
         this.valleyT = s.t
       }
-      if (d - this.valley >= this.minRange()) {
+      // 武装条件：
+      //  · gyro：原始角速度绝对值越限即可。绝对门限本身就是"真动 vs 晃动"的判据
+      //    （实测晃动 |ω|≤28、真实重复 ≥50），再叠"平滑值必须爬升 25"会误杀短促爆发。
+      //  · gravity：姿态改变量超过门限。
+      const armed =
+        this.opt.signal === 'gyro'
+          ? omegaMag >= this.opt.minOmegaPeakDps
+          : metric - this.valley >= this.minRange()
+      if (armed) {
         this.armed = true
         this.repValley = this.valley
-        this.repPeak = d
+        this.repPeak = metric
         this.repOmega = omegaMag
         this.repTwistPath = 0
         this.repTotalPath = 0
@@ -275,8 +341,8 @@ export class RepCounter {
       return null
     }
 
-    // 已武装：累积本次统计
-    if (d > this.repPeak) this.repPeak = d
+    // 已武装：累积本次统计（repPeak 记平滑值的峰，用于回落判定；repOmega 记原始峰值，用于门限）
+    if (metric > this.repPeak) this.repPeak = metric
     if (omegaMag > this.repOmega) this.repOmega = omegaMag
     this.repTotalPath += omegaMag * dt
     this.repTwistPath += Math.abs(dot(omega, this.g)) * dt
@@ -284,20 +350,30 @@ export class RepCounter {
     if (s.t - this.valleyT > this.opt.maxRepMs) {
       // 超时：当作无效，从当前点重新找谷
       this.armed = false
-      this.valley = d
+      this.valley = metric
       this.valleyT = s.t
       return null
     }
 
     const fallBelow = this.repValley + this.opt.fallFrac * (this.repPeak - this.repValley)
-    if (d > fallBelow) return null
+    if (metric > fallBelow) {
+      this.fallStartT = 0 // 又抬起来了：重新计时
+      return null
+    }
+    // 回落必须持续一段时间，排除顶点的短暂停顿
+    if (this.fallStartT === 0) {
+      this.fallStartT = s.t
+      return null
+    }
+    if (s.t - this.fallStartT < this.opt.fallHoldMs) return null
 
     // 回落到位：本次结束
     this.armed = false
+    this.fallStartT = 0
     const startMs = this.valleyT // 先取起点，之后再更新 valleyT
     const durationMs = s.t - startMs
     const excursion = this.repPeak - this.repValley
-    this.valley = d
+    this.valley = metric
     this.valleyT = s.t
     return this.accept(excursion, durationMs, startMs, s.t, false)
   }
@@ -331,19 +407,25 @@ export class RepCounter {
     endMs: number,
     fromFlush: boolean,
   ): RepEvent | null {
-    if (durationMs < this.opt.minRepMs) return null
-    if (durationMs > this.opt.maxRepMs) return null
-    if (excursion < this.minRange()) return null
-    if (this.repOmega < this.opt.minOmegaPeakDps) return null
+    if (durationMs < this.opt.minRepMs) return this.reject('too_short')
+    if (durationMs > this.opt.maxRepMs) return this.reject('too_long')
+    // 幅度门限：两个信号量纲不同，各自判定
+    if (this.opt.signal === 'gyro') {
+      if (this.repOmega < this.opt.minOmegaPeakDps) return this.reject('omega_below_gate')
+    } else if (excursion < this.minRange()) {
+      return this.reject('range_below_gate')
+    }
+    if (this.repOmega < this.opt.minOmegaPeakDps) return this.reject('omega_below_gate')
     // 相对时长门限：已经数出几次后，某一次比平时慢好几倍，那是挪位置/放下，不是动作。
     // 用相对值而不是绝对上限，是为了不误杀"整组都做得很慢"的正常训练。
     if (this.durations.length >= 3) {
       const sorted = [...this.durations].sort((a, b) => a - b)
       const med = sorted[Math.floor(sorted.length / 2)]
-      if (durationMs > med * this.opt.durationRatioLimit) return null
+      if (durationMs > med * this.opt.durationRatioLimit) return this.reject('duration_outlier')
     }
 
     this.count++
+    this.lastReject = null
     this.peaks.push(excursion)
     this.durations.push(durationMs)
     const twistRatio = this.repTotalPath > 0 ? this.repTwistPath / this.repTotalPath : 0
@@ -356,8 +438,14 @@ export class RepCounter {
       peakOmegaDps: this.repOmega,
       twistRatio,
       flags: {
-        shortRange: this.opt.targetPeakDeg > 0 && excursion < this.opt.targetPeakDeg * 0.7,
-        momentum: !fromFlush && this.opt.targetDurationMs > 0 && durationMs < this.opt.targetDurationMs * 0.7,
+        // 幅度不足/借力两个标志依赖「目标幅度」，只在 gravity 信号下有意义
+        //（gyro 信号的 excursion 是角速度幅度，量纲不同，不能直接比）
+        shortRange: this.opt.signal === 'gravity' && this.opt.targetPeakDeg > 0 && excursion < this.opt.targetPeakDeg * 0.7,
+        momentum:
+          !fromFlush &&
+          this.opt.signal === 'gravity' &&
+          this.opt.targetPeakDeg > 0 &&
+          excursion > this.opt.targetPeakDeg * 1.35,
         wristFlip: twistRatio > this.opt.twistRatioLimit,
       },
     }

@@ -8,13 +8,13 @@ const server = await createServer({ configFile: 'vite.config.ts', server: { midd
 const { segmentMotion } = await server.ssrLoadModule('/src/core/analysis/segmentation.ts')
 const { RepCounter } = await server.ssrLoadModule('/src/core/analysis/repCounter.ts')
 
-// 结构上可确证的真值。注意这里**不含 #2**：早先拿 segmentMotion 的 19 当真值是错的，
-// d 的包络显示 #2 在 0-8s / 15-20s / 36-40s 只有三段动作、中间有 8s 和 7.5s 完全静止，
-// 凑不出 19 次。没有人工数过的次数，就不写进这个表。
+// 结构上可确证的真值。注意这里**不含 #2 和 #25**：
+// 早先拿 segmentMotion 的输出当真值是错的（#2 它说 19，#25 它说 1，都没有独立验证过波形）。
+// 真正的基准是工程包里那 213 条「一条 = 一次重复」的样本，
+// 用 scripts/diagnose-counter.mjs 评测。
 const EXPECT = {
   13: { n: 1, why: '单次（波形确认）' },
   24: { n: 1, why: '单次（波形确认）' },
-  25: { n: 1, why: '单次（波形确认）' },
   26: { n: 1, why: '单次（波形确认）' },
   27: { n: 1, why: '单次，之后 3.5s 静止（波形确认）' },
   29: { n: 1, why: '单次，记录在回落途中截止' },

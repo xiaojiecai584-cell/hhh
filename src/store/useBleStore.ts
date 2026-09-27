@@ -87,6 +87,30 @@ function typeLabel(frame: { type: number }): string {
   return '事件帧'
 }
 
+/** 采集工况：标定计数与阈值时需要按工况分组统计 */
+export type RecCondition = 'normal' | 'fast' | 'slow' | 'large' | 'small' | 'static' | 'shake'
+
+export const CONDITION_LABEL: Record<RecCondition, string> = {
+  normal: '正常',
+  fast: '快',
+  slow: '慢',
+  large: '大幅度',
+  small: '小幅度',
+  static: '完全不动',
+  shake: '轻轻晃动',
+}
+
+/** 提交采集数据时的人工真值。缺了这些，数据无法用于标定。 */
+export interface RecordMeta {
+  /** 本段真实次数（人工数出来的）。0 = 未记录 */
+  trueReps: number
+  condition: RecCondition | 'none'
+  /** whole = 整段上传不切分（标定计数用）；segmented = 自动切段逐段标注（标定错误阈值用） */
+  mode: 'whole' | 'segmented'
+  /** 这段数据打算用来做什么 */
+  purpose: 'counting_calibration' | 'error_calibration' | 'general'
+}
+
 interface BleState {
   kind: TransportKind
   state: TransportState
@@ -120,8 +144,8 @@ interface BleState {
   sendStopAction: (label?: string) => Promise<void>
   setTargetReps: (n: number) => void
   startRecording: () => void
-  stopRecording: () => void
-  submitSegments: (labels: (ManualLabel | null)[]) => Promise<void>
+  stopRecording: (opts?: { skipSegment?: boolean }) => void
+  submitSegments: (labels: (ManualLabel | null)[], meta?: RecordMeta) => Promise<void>
   discardPending: () => void
   clearEvents: () => void
   clearRawRx: () => void
@@ -432,11 +456,12 @@ export const useBleStore = create<BleState>((set) => ({
   },
 
   // 录制只是「暂时采集数据」，与是否结束本组（0x83）无关
-  stopRecording: () => {
+  stopRecording: (opts) => {
     const actionId = useBleStore.getState().currentActionId ?? 1
     recordingFlag = false
-    segmentRanges = segmentMotion(recordBuffer)
-    const segments = segmentRanges.map((r) => describeSegment(recordBuffer, r))
+    // 整段上传（标定计数）不需要切段——切分算法正是要被标定的对象，切了反而误导
+    segmentRanges = opts?.skipSegment ? [] : segmentMotion(recordBuffer)
+    const segments = opts?.skipSegment ? [] : segmentRanges.map((r) => describeSegment(recordBuffer, r))
     set({
       recording: false,
       recordingCount: 0,
@@ -448,7 +473,7 @@ export const useBleStore = create<BleState>((set) => ({
     })
   },
 
-  submitSegments: async (labels) => {
+  submitSegments: async (labels, meta) => {
     const p = useBleStore.getState().pending
     if (!p) return
     const buf = recordBuffer
@@ -458,6 +483,44 @@ export const useBleStore = create<BleState>((set) => ({
     set({ pending: null })
     const { subjectId, sensorPosition } = useSubjectStore.getState()
     const sessionId = setSessionId
+    const common = {
+      subjectId,
+      sessionId,
+      sensor: {
+        position: sensorPosition,
+        samplingRate: estimateSamplingRate(buf),
+        channels: [...SIGNAL_CHANNELS],
+      },
+      // 标定用的人工真值：真实次数与工况。缺了这两项，这批数据无法用于标定。
+      trueReps: meta?.trueReps ?? 0,
+      condition: meta?.condition ?? 'none',
+      purpose: meta?.purpose ?? 'general',
+      actionId: p.actionId,
+      actionName: p.actionName,
+      kind: 'sensor_sample',
+    }
+
+    // ---- 整段上传：不切分，保留完整时间序列（标定计数用） ----
+    if (meta?.mode === 'whole') {
+      if (!buf.length) return
+      try {
+        await fetch('/api/collect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...common,
+            segmentMode: 'whole',
+            samples: buf,
+            annotations: [],
+          }),
+        })
+      } catch {
+        /* ignore */
+      }
+      return
+    }
+
+    // ---- 自动切段 + 逐段人工标注（标定错误阈值用） ----
     try {
       await Promise.all(
         ranges.map((r, i) => {
@@ -478,24 +541,14 @@ export const useBleStore = create<BleState>((set) => ({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              kind: 'sensor_sample',
-              // ---- 与 Python 后端 DatasetRecord/DatasetLabel 对齐的字段 ----
+              ...common,
+              segmentMode: 'segmented',
               // 缺 label.standard 时，后端会把「无错误」的样本判成 unknown 而不是 correct，
               // 所以标准与否必须显式写进 label。
               label: { standard: label.standard },
               labelSource: 'human',
               isWeakLabel: false,
-              subjectId,
-              sessionId,
-              sensor: {
-                position: sensorPosition,
-                samplingRate: estimateSamplingRate(slice),
-                channels: [...SIGNAL_CHANNELS],
-              },
               phases: phaseRanges(dur),
-              // ---- 网站现有字段（保持兼容） ----
-              actionId: p.actionId,
-              actionName: p.actionName,
               samples: slice,
               annotations,
             }),

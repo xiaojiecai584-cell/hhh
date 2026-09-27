@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useBleStore, type LoggedEvent, type ManualLabel } from '../store/useBleStore'
+import { useBleStore, CONDITION_LABEL, type LoggedEvent, type ManualLabel, type RecCondition } from '../store/useBleStore'
 import { useBleConfigStore } from '../store/useBleConfigStore'
 import { useBodyStore } from '../store/useBodyStore'
 import { ACTION_NAMES } from '../core/protocol/types'
@@ -64,6 +64,10 @@ export default function ConnectPage() {
   const [showBleConfig, setShowBleConfig] = useState(false)
   const [segLabels, setSegLabels] = useState<Record<number, ManualLabel>>({})
   const [deletedSegs, setDeletedSegs] = useState<Set<number>>(new Set())
+  // 标定采集：真实次数、工况、是否整段上传
+  const [trueReps, setTrueReps] = useState(0)
+  const [condition, setCondition] = useState<RecCondition>('normal')
+  const [recMode, setRecMode] = useState<'whole' | 'segmented'>('whole')
   const sendingRef = useRef(false)
 
   useEffect(() => {
@@ -98,7 +102,12 @@ export default function ConnectPage() {
     const p = pending
     if (!p) return
     const labels = p.segments.map((_, i) => (deletedSegs.has(i) ? null : (segLabels[i] ?? null)))
-    await submitSegments(labels)
+    await submitSegments(labels, {
+      trueReps,
+      condition,
+      mode: recMode,
+      purpose: recMode === 'whole' ? 'counting_calibration' : 'error_calibration',
+    })
     setSegLabels({})
     setDeletedSegs(new Set())
   }
@@ -380,14 +389,55 @@ export default function ConnectPage() {
           {pending ? (
             <>
               <p className="card__desc" style={{ marginTop: 8 }}>
-                录制完成，自动切分成 {pending.segments.length} 段。请逐段确认并标注（可删除切错的段）。
+                {recMode === 'whole'
+                  ? '整段上传：不做切分，只报真实次数。'
+                  : `录制完成，自动切分成 ${pending.segments.length} 段。请逐段确认并标注（可删除切错的段）。`}
               </p>
-              {pending.segments.length === 0 && (
+
+              {/* 标定必需的人工真值：缺了它，这批数据无法用来定标 */}
+              <div className="field-grid" style={{ marginTop: 10 }}>
+                <label className="field">
+                  <span className="field__label">本段真实次数（人工数出来的）</span>
+                  <input
+                    className="input"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    max={999}
+                    value={trueReps}
+                    onChange={(e) => setTrueReps(Number(e.target.value))}
+                  />
+                </label>
+              </div>
+              <div className="field" style={{ marginTop: 10 }}>
+                <span className="field__label">采集工况</span>
+                <div className="flag-row" style={{ marginTop: 6 }}>
+                  {(Object.keys(CONDITION_LABEL) as RecCondition[]).map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      className="chip chip--btn"
+                      style={condition === c ? { outline: '2px solid var(--accent)' } : undefined}
+                      onClick={() => setCondition(c)}
+                    >
+                      {CONDITION_LABEL[c]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="card__desc" style={{ marginTop: 8 }}>
+                {recMode === 'whole'
+                  ? '整段上传用于标定计数：不做切分，只报真实次数，离线用同一段流验证计数器。'
+                  : '逐段标注用于标定错误阈值：一次录制只做一次动作，标注粒度天然对齐。'}
+              </p>
+
+              {pending.segments.length === 0 && recMode !== 'whole' && (
                 <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
                   未检测到有效动作（可能录制时设备未运动），请重新录制。
                 </div>
               )}
-              {pending.segments.map((seg, idx) => {
+              {recMode !== 'whole' &&
+                pending.segments.map((seg, idx) => {
                 const deleted = deletedSegs.has(idx)
                 if (deleted) return null
                 const label = segLabels[idx]
@@ -454,8 +504,28 @@ export default function ConnectPage() {
           ) : (
             <>
               <p className="card__desc" style={{ marginTop: 8 }}>
-                录制仅用于「暂时采集数据」：点「开始录制」开始采集，点「停止录制」后自动切分成单次、逐段标注「标准 / 不标准 + 错误码」并入库。
+                采集两种数据：**整段**（一次连续做一整组，用于标定计数）与 **逐段**（一次只做一次动作，
+                用于标定错误阈值并人工标注）。
               </p>
+              <div className="field" style={{ marginTop: 6 }}>
+                <span className="field__label">上传方式</span>
+                <div className="seg" style={{ marginTop: 6 }}>
+                  <button
+                    type="button"
+                    className={`seg__btn${recMode === 'whole' ? ' seg__btn--active' : ''}`}
+                    onClick={() => setRecMode('whole')}
+                  >
+                    整段（标定计数）
+                  </button>
+                  <button
+                    type="button"
+                    className={`seg__btn${recMode === 'segmented' ? ' seg__btn--active' : ''}`}
+                    onClick={() => setRecMode('segmented')}
+                  >
+                    逐段（标定阈值）
+                  </button>
+                </div>
+              </div>
               {recording && (
                 <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
                   采集中 · 已缓存 {recordingCount} 个采样点
@@ -463,7 +533,7 @@ export default function ConnectPage() {
               )}
               <div className="btn-grid" style={{ marginTop: 10 }}>
                 {recording ? (
-                  <button className="btn" onClick={() => stopRecording()}>
+                  <button className="btn" onClick={() => stopRecording({ skipSegment: recMode === 'whole' })}>
                     停止录制
                   </button>
                 ) : (

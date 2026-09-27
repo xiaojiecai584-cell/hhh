@@ -8,17 +8,19 @@ const server = await createServer({ configFile: 'vite.config.ts', server: { midd
 const { segmentMotion } = await server.ssrLoadModule('/src/core/analysis/segmentation.ts')
 const { RepCounter } = await server.ssrLoadModule('/src/core/analysis/repCounter.ts')
 
-// 结构上可确定的真值（数据里没有人工数出的次数，只能用这几个"确定"的例子当基准）
+// 结构上可确证的真值。注意这里**不含 #2**：早先拿 segmentMotion 的 19 当真值是错的，
+// d 的包络显示 #2 在 0-8s / 15-20s / 36-40s 只有三段动作、中间有 8s 和 7.5s 完全静止，
+// 凑不出 19 次。没有人工数过的次数，就不写进这个表。
 const EXPECT = {
-  2: { n: 19, why: '40s 连续录音，波形周期清晰' },
-  27: { n: 1, why: '单次侧平举，之后 3.5s 静止' },
+  13: { n: 1, why: '单次（波形确认）' },
+  24: { n: 1, why: '单次（波形确认）' },
+  25: { n: 1, why: '单次（波形确认）' },
+  26: { n: 1, why: '单次（波形确认）' },
+  27: { n: 1, why: '单次，之后 3.5s 静止（波形确认）' },
+  29: { n: 1, why: '单次，记录在回落途中截止' },
+  32: { n: 1, why: '单次，记录在回落途中截止' },
   201: { n: 0, why: '全程 |ω|≤28°/s，只是站着晃动' },
   202: { n: 0, why: '全程 |ω|≤23°/s，只是站着晃动' },
-  203: { n: 1, why: '单次，前 6s 未达活动门槛' },
-  24: { n: 1, why: '单次' },
-  25: { n: 1, why: '单次' },
-  26: { n: 1, why: '单次' },
-  13: { n: 1, why: '单次' },
 }
 
 const cont = rows.map((r, i) => ({ i, r, ss: r.samples ?? [] })).filter((x) => x.ss.length >= 150)
@@ -36,6 +38,8 @@ for (const { i, r, ss } of cont) {
     const e = c.push(s)
     if (e) evs.push(e)
   }
+  const tail = c.flush(ss[ss.length - 1].t)
+  if (tail) evs.push(tail)
   const exp = EXPECT[i]
   let verdict = '—'
   if (exp) {

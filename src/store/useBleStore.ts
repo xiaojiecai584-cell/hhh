@@ -14,6 +14,7 @@ import {
 } from '../core/protocol/types'
 import { ERROR_SEVERITY, type SensorSample } from '../core/analysis/ruleClassifier'
 import { segmentMotion, describeSegment, type SegmentRange } from '../core/analysis/segmentation'
+import { RepCounter, type RepEvent } from '../core/analysis/repCounter'
 
 export type LoggedEvent = EventPacket & { id: number }
 export interface TxEntry {
@@ -69,6 +70,8 @@ interface BleState {
   recording: boolean
   recordingCount: number
   repCount: number
+  /** 本组已识别出的每一次重复（在线计数产出，字段对齐协议 0x02） */
+  repEvents: RepEvent[]
   targetReps: number
   setActive: boolean
   currentActionId: number | null
@@ -94,11 +97,11 @@ let recordBuffer: SensorSample[] = []
 let segmentRanges: SegmentRange[] = []
 let recordingFlag = false
 let targetRepsFlag = 0 // 本组目标次数（0 = 不限）
-let lastCountAt = 0 // 上次统计次数时的采样点位置
 let autoStopping = false // 防止自动停止重入
-// 次数统计独立于录制：从收到 0x82 起缓存原始 0x01 流，用于数次数
-let countBuffer: SensorSample[] = []
+// 本组计数器：在线、单调、只依赖已发生的样本（为什么不能用 segmentMotion 见 repCounter.ts）
+let repCounter = new RepCounter()
 let countActive = false
+let lastSampleT = 0
 
 function attach(t: BLETransport) {
   cleanups.forEach((f) => f())
@@ -128,13 +131,15 @@ function attach(t: BLETransport) {
         if (recordingFlag) recordBuffer.push(sample)
         // 次数统计（自 0x82 起常开，与录制无关）
         if (countActive) {
-          countBuffer.push(sample)
-          if (countBuffer.length > 12000) countBuffer.splice(0, countBuffer.length - 12000) // 上限 ~4 分钟
-          if (!autoStopping && countBuffer.length - lastCountAt >= 25) {
-            lastCountAt = countBuffer.length
-            const count = segmentMotion(countBuffer).length
-            if (count !== useBleStore.getState().repCount) useBleStore.setState({ repCount: count })
-            if (targetRepsFlag > 0 && count >= targetRepsFlag) {
+          lastSampleT = sample.t
+          const ev = repCounter.push(sample)
+          if (ev) {
+            const count = repCounter.repCount
+            useBleStore.setState((s) => ({
+              repCount: count,
+              repEvents: [...s.repEvents, ev].slice(-200),
+            }))
+            if (!autoStopping && targetRepsFlag > 0 && count >= targetRepsFlag) {
               autoStopping = true
               void useBleStore.getState().sendStopAction(`达标 ${targetRepsFlag} 次 · 停止采集 (0x83)`)
               // 若正在录制，同时结束录制，便于对这批数据做标注
@@ -174,6 +179,7 @@ function attach(t: BLETransport) {
     recording: false,
     recordingCount: 0,
     repCount: 0,
+    repEvents: [],
     setActive: false,
     pending: null,
   })
@@ -194,6 +200,7 @@ export const useBleStore = create<BleState>((set) => ({
   recording: false,
   recordingCount: 0,
   repCount: 0,
+  repEvents: [],
   targetReps: 0,
   setActive: false,
   currentActionId: null,
@@ -231,15 +238,16 @@ export const useBleStore = create<BleState>((set) => ({
     const bytes = encodeStartAction(target)
     try {
       await active.send(bytes)
-      // 开始新一组：重置次数统计（与录制无关）
-      countBuffer = []
+      // 开始新一组：换一个全新的计数器（在线计数，不重算历史）
+      repCounter = new RepCounter()
       countActive = true
-      lastCountAt = 0
+      lastSampleT = 0
       autoStopping = false
       set((s) => ({
         txLog: [...s.txLog, { id: seq++, hex: toHex(bytes), label: label ?? '开始动作' }].slice(-50),
         currentActionId: target.actionId,
         repCount: 0,
+        repEvents: [],
         setActive: true,
       }))
     } catch (e) {
@@ -248,9 +256,14 @@ export const useBleStore = create<BleState>((set) => ({
   },
 
   sendStopAction: async (label) => {
-    // 结束本组：停掉次数统计
+    // 结束本组：先把半途中的最后一次结算掉（记录可能在回落途中就截止了），再停计数
+    if (countActive) {
+      const tail = repCounter.flush(lastSampleT || Date.now())
+      if (tail) {
+        set((s) => ({ repCount: repCounter.repCount, repEvents: [...s.repEvents, tail].slice(-200) }))
+      }
+    }
     countActive = false
-    countBuffer = []
     autoStopping = false
     set({ setActive: false })
     if (!active) return

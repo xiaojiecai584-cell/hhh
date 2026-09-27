@@ -43,6 +43,7 @@ export default function ConnectPage() {
   const recording = useBleStore((s) => s.recording)
   const recordingCount = useBleStore((s) => s.recordingCount)
   const repCount = useBleStore((s) => s.repCount)
+  const repEvents = useBleStore((s) => s.repEvents)
   const targetReps = useBleStore((s) => s.targetReps)
   const setTargetReps = useBleStore((s) => s.setTargetReps)
   const setActive = useBleStore((s) => s.setActive)
@@ -299,6 +300,20 @@ export default function ConnectPage() {
             <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
               已识别 <b>{repCount}</b> 次{targetReps > 0 ? ` / 目标 ${targetReps} 次` : ''}
               {targetReps > 0 && repCount >= targetReps ? ' —— 已达标，正在下发 0x83…' : ''}
+            </div>
+          )}
+          {repEvents.length > 0 && (
+            <div className="flag-row" style={{ marginTop: 10 }}>
+              {[...repEvents]
+                .slice(-6)
+                .reverse()
+                .map((e) => (
+                  <span className="chip" key={e.index}>
+                    #{e.index} {e.rangeDeg.toFixed(0)}° · {(e.durationMs / 1000).toFixed(1)}s
+                    {e.flags.wristFlip ? ' · 腕翻' : ''}
+                    {e.flags.shortRange ? ' · 幅度不足' : ''}
+                  </span>
+                ))}
             </div>
           )}
           {setActive && (

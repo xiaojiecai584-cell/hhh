@@ -3,37 +3,34 @@ import type { SensorSample } from './ruleClassifier'
 /**
  * 在线重复计数（rep counter）。
  *
- * ## 为什么不能用「单轴陀螺仪积分」
+ * ## 为什么不能用 `segmentMotion`
  *
- * `segmentMotion` 是为**离线切段**写的（录完把整段切开交给人工标注），它可以整段重算、
- * 边界可以随后续数据变化；实时计数不行——计数必须**单调递增**、只依赖已发生的样本。
- * 更要紧的是，实测线上真实数据表明单轴陀螺仪积分本身就不适合当计数信号：
+ * `segmentMotion` 是**离线切段**算法（录完把整段切开交给人工标注），允许整段重算、
+ * 边界可以随后续数据变化。实测把它当实时计数器用会出三个结构性问题：
  *
- *  - #2（40s 连续坐姿推举，波形周期清晰、约 19 次）：单轴积分幅度只有 30~36°，
- *    而重力方向实际变化 72.5°——**低估一半以上**；且主轴会在 gy/gx/gz 之间跳。
- *  - 干净的单次（#13/#24/#25/#26/#27/#29/#32）：重力方向变化 69~79°，高度一致。
- *  - 只是站着晃动（#201/#202）：重力方向变化 25~43°，而陀螺仪积分给出的却是「4 段」（幻影计数）。
+ *  1. **数字跳变**：`count = segmentMotion(整个缓冲区).length` 每 25 个点重算一次，
+ *     而主轴选择与「线性去漂移」都依赖整段首尾——尾巴一延长，斜率变、积分曲线整体变形、
+ *     旧的波谷位置全移。所以计数会 8→9→8→10 回跳，**天生非单调**。
+ *  2. **系统性漏数**：`MIN_SEG_SAMPLES=60`（1.2s）把过近的波谷合并，动作快一点就把两次并成一次，
+ *     于是永远到不了目标次数，达标自动停止也永远不触发。
+ *  3. **轻晃也加数**：只有 `|ω|≥15°/s` 一道掐头去尾，之后**没有任何幅度判断**。
+ *     实测线上 #201（全程 |ω|≤28°/s，就是站着晃）被切出 4 段。
  *
- * 结论：**「肢体到底动没动」要用重力参考的姿态回答，不是「转了多少」**。
+ * ## 计数信号：重力参考的姿态改变量
  *
- * ## 计数信号
+ * 互补滤波跟踪设备系重力方向单位向量 ĝ（陀螺仪短期准、加速度计长期准），
+ * 维护静止参考 ĝ_ref，计数标量 `d = angle(ĝ, ĝ_ref)`。实测：
+ * 干净单次侧平举 d≈69~79°，而单轴陀螺仪积分只有 30~36°（低估一半以上，主轴还会跳）。
  *
- * 用互补滤波跟踪设备系里的重力方向单位向量 ĝ：
- *   ĝ ← normalize( ĝ 绕 ω 旋转 dt )        ← 陀螺仪，短期准、长期漂
- *   ĝ ← normalize( (1-κ)·ĝ + κ·ĝ_acc )     ← 加速度计，长期准、短期吵
- * 维护一个「静止参考方向」ĝ_ref（仅在 REST 且慢速时更新），计数标量
- *   d = angle(ĝ, ĝ_ref)
- * 即**相对静止姿态的姿态改变量**（度）。绝对、不漂移，阈值有物理含义。
+ * ## 状态机：峰谷自适应（不是「回到静止」）
  *
- * ## 状态机：以「回到静止」为计数点
+ * 一次重复 = 从谷底升到峰值、再回落到峰谷差的 `fallFrac` 以下。阈值全部相对本组实际幅度，所以：
+ *  - 连续做、不完整放回起始位也能数（回落到峰值 40% 即算一次）
+ *  - 幅度大小不同的动作不用改参数
+ *  - 轻轻晃动时峰谷差永远到不了 `minRangeDeg`，**一次都不会计**
  *
- * 两态 REST / MOVING：
- *   REST   → d ≥ enterDeg 时进入 MOVING，记下起点
- *   MOVING → d ≤ exitDeg（迟滞）时本次结束；峰值幅度 / 角速度 / 时长都达标才 +1
- * 这就是「以停止为标准、内部半次、界面整数」的落地。
- *
- * 注意**不能**用「位移量迟滞 + 窗口自适应阈值」：那样参考方向会在动作上升段被拖着走，
- * 位移量永远长不到真实幅度（实测把 74° 的真实幅度压成 38°）。
+ * 参考方向只在「明显静止」时缓慢跟随，肢体一旦离开静止就冻结——
+ * 否则慢速动作时参考会跟着一起走，姿态改变量永远长不起来（实测把 74° 压成 38°）。
  *
  * RepEvent 字段与协议 0x02 事件帧对齐，便于以后固件实现 0x02 后无缝切换数据源。
  */
@@ -52,52 +49,55 @@ export interface RepEvent {
   startMs: number
   endMs: number
   durationMs: number
-  rangeDeg: number // 本次姿态改变峰值（度）
+  rangeDeg: number // 本次峰谷差（度）
   peakOmegaDps: number // 本次角速度峰值
   twistRatio: number // 绕重力轴扭转占总转动的比例
   flags: RepFlags
 }
 
 export interface RepCounterOptions {
-  /** 离开静止的门槛（度）：姿态改变超过它即认为开始一次动作 */
-  enterDeg: number
-  /** 回到静止的门槛（度）：低于它则本次动作结束（与 enterDeg 构成迟滞） */
-  exitDeg: number
-  /** 幅度门限（度）：峰值小于它不计次（无目标、又还没建立基线时使用） */
-  minRangeDeg: number
-  /** 角速度峰值门限（°/s） */
-  minOmegaPeakDps: number
-  /** 不应期（ms） */
-  minRepMs: number
-  /** 单次最长时间（ms） */
-  maxRepMs: number
+  /** 离开静止的冻结门槛（度）：d 超过它就不再更新静止参考 */
+  restFreezeDeg: number
   /** 静止参考更新的角速度门槛（°/s） */
   restOmegaDps: number
   /** 静止参考更新的时间常数（ms） */
   restTauMs: number
+  /** 幅度门限（度）：峰谷差小于它不计次（无目标、又还没建立基线时使用） */
+  minRangeDeg: number
+  /** 角速度峰值门限（°/s）：真实重复一定有实际转动 */
+  minOmegaPeakDps: number
+  /** 回落到峰谷差的该比例以下，算本次结束 */
+  fallFrac: number
+  /** 不应期（ms） */
+  minRepMs: number
+  /** 单次最长时间（ms） */
+  maxRepMs: number
   /** 期望幅度（度），0 = 未知 */
   targetPeakDeg: number
   /** 期望单次时长（ms），0 = 未知 */
   targetDurationMs: number
   /** 扭转占比超过它判为腕翻转 */
   twistRatioLimit: number
-  /** 自适应基线的建立方式：取已计次幅度中位数的该倍数作为门限 */
+  /** 自适应基线：取已计次幅度中位数的该倍数作为门限 */
   adaptiveFloorRatio: number
+  /** 单次耗时超过已计次耗时中位数的该倍数，判为「挪位置」而不是动作 */
+  durationRatioLimit: number
 }
 
 export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
-  enterDeg: 14,
-  exitDeg: 8,
-  minRangeDeg: 30,
-  minOmegaPeakDps: 40,
-  minRepMs: 700,
-  maxRepMs: 15000,
+  restFreezeDeg: 10,
   restOmegaDps: 40,
   restTauMs: 800,
+  minRangeDeg: 20,
+  minOmegaPeakDps: 40,
+  fallFrac: 0.4,
+  minRepMs: 700,
+  maxRepMs: 15000,
   targetPeakDeg: 0,
   targetDurationMs: 0,
   twistRatioLimit: 0.25,
-  adaptiveFloorRatio: 0.5,
+  adaptiveFloorRatio: 0.6,
+  durationRatioLimit: 3,
 }
 
 interface V3 {
@@ -116,7 +116,6 @@ const cross = (a: V3, b: V3): V3 => ({
   y: a.z * b.x - a.x * b.z,
   z: a.x * b.y - a.y * b.x,
 })
-/** 单位向量夹角（度） */
 const angleDeg = (a: V3, b: V3) => (Math.acos(Math.max(-1, Math.min(1, dot(a, b)))) * 180) / Math.PI
 
 /** 加速度计重力方向（设备系单位向量）；模长离开 1g 太多说明线加速度污染严重，返回 null */
@@ -129,18 +128,24 @@ function gravityFromAccel(s: SensorSample): V3 | null {
 export class RepCounter {
   private opt: RepCounterOptions
 
-  private g: V3 | null = null // 互补滤波后的重力方向（设备系）
-  private gRef: V3 | null = null // 静止参考方向
+  private g: V3 | null = null
+  private gRef: V3 | null = null
   private prevT: number | null = null
 
   private count = 0
-  private moving = false
-  private repStart = 0
+  private peaks: number[] = []
+  private durations: number[] = []
+
+  // 当前这次重复
+  private armed = false
+  private valley = 0
+  private valleyT = 0
   private repPeak = 0
+  private repValley = 0
   private repOmega = 0
   private repTwistPath = 0
   private repTotalPath = 0
-  private peaks: number[] = []
+
   private dNow = 0
 
   constructor(opt: Partial<RepCounterOptions> = {}) {
@@ -151,13 +156,14 @@ export class RepCounter {
     return this.count
   }
 
-  /** 当前相对静止姿态的姿态改变量（度），供 UI 显示实时幅度 */
+  /** 当前相对静止姿态的姿态改变量（度） */
   get currentDisplacementDeg(): number {
     return this.dNow
   }
 
-  get isMoving(): boolean {
-    return this.moving
+  /** 当前是否处于一次重复当中 */
+  get isRepInProgress(): boolean {
+    return this.armed
   }
 
   reset() {
@@ -165,11 +171,11 @@ export class RepCounter {
     this.gRef = null
     this.prevT = null
     this.count = 0
-    this.moving = false
-    this.repOmega = 0
-    this.repTwistPath = 0
-    this.repTotalPath = 0
     this.peaks = []
+    this.durations = []
+    this.armed = false
+    this.valley = 0
+    this.valleyT = 0
     this.dNow = 0
   }
 
@@ -178,10 +184,8 @@ export class RepCounter {
     if (this.prevT === null) {
       this.prevT = s.t
       const g0 = gravityFromAccel(s)
-      if (g0) {
-        this.g = g0
-        this.gRef = g0
-      }
+      this.g = g0
+      this.gRef = g0
       return null
     }
 
@@ -192,23 +196,27 @@ export class RepCounter {
       // 数据中断：当前姿态作为新起点，避免把两段拼成一次
       this.g = null
       this.gRef = null
-      this.moving = false
+      this.armed = false
       return null
     }
     if (dtMs > 100) dtMs = 100
     const dt = dtMs / 1000
 
-    const omega: V3 = { x: s.gx, y: s.gy, z: s.gz } // °/s
+    const omega: V3 = { x: s.gx, y: s.gy, z: s.gz }
     const omegaMag = Math.hypot(omega.x, omega.y, omega.z)
     const gAcc = gravityFromAccel(s)
 
-    // --- 互补滤波 ---
+    // --- 互补滤波：ĝ 绕 ω 旋转 dt，再向加速度计方向拉回 ---
     if (this.g === null) {
       if (!gAcc) return null
       this.g = gAcc
       this.gRef = gAcc
     } else {
-      const wRad = { x: (omega.x * Math.PI) / 180, y: (omega.y * Math.PI) / 180, z: (omega.z * Math.PI) / 180 }
+      const wRad = {
+        x: (omega.x * Math.PI) / 180,
+        y: (omega.y * Math.PI) / 180,
+        z: (omega.z * Math.PI) / 180,
+      }
       const wMag = Math.hypot(wRad.x, wRad.y, wRad.z)
       let predicted: V3 = this.g
       if (wMag > 1e-6) {
@@ -234,24 +242,31 @@ export class RepCounter {
       })
     }
 
-    const d = angleDeg(this.g, this.gRef as V3)
+    if (this.gRef === null) this.gRef = this.g
+    const d = angleDeg(this.g, this.gRef)
     this.dNow = d
 
-    // --- 两态状态机 ---
-    if (!this.moving) {
-      // REST：静止参考只在慢速时缓慢跟随真实静止姿态
-      if (omegaMag < this.opt.restOmegaDps) {
-        const kr = 1 - Math.exp(-dtMs / this.opt.restTauMs)
-        const r = this.gRef as V3
-        this.gRef = norm({
-          x: r.x * (1 - kr) + this.g.x * kr,
-          y: r.y * (1 - kr) + this.g.y * kr,
-          z: r.z * (1 - kr) + this.g.z * kr,
-        })
+    // --- 静止参考：只在「明显静止」时缓慢跟随；肢体离开静止就冻结 ---
+    if (d <= this.opt.restFreezeDeg && omegaMag < this.opt.restOmegaDps) {
+      const kr = 1 - Math.exp(-dtMs / this.opt.restTauMs)
+      const r = this.gRef
+      this.gRef = norm({
+        x: r.x * (1 - kr) + this.g.x * kr,
+        y: r.y * (1 - kr) + this.g.y * kr,
+        z: r.z * (1 - kr) + this.g.z * kr,
+      })
+    }
+
+    // --- 峰谷自适应状态机 ---
+    if (!this.armed) {
+      // 未武装：谷值跟随最低点
+      if (d < this.valley || this.valleyT === 0) {
+        this.valley = d
+        this.valleyT = s.t
       }
-      if (d >= this.opt.enterDeg) {
-        this.moving = true
-        this.repStart = s.t
+      if (d - this.valley >= this.minRange()) {
+        this.armed = true
+        this.repValley = this.valley
         this.repPeak = d
         this.repOmega = omegaMag
         this.repTwistPath = 0
@@ -260,40 +275,76 @@ export class RepCounter {
       return null
     }
 
-    // MOVING
+    // 已武装：累积本次统计
     if (d > this.repPeak) this.repPeak = d
     if (omegaMag > this.repOmega) this.repOmega = omegaMag
     this.repTotalPath += omegaMag * dt
     this.repTwistPath += Math.abs(dot(omega, this.g)) * dt
 
-    if (s.t - this.repStart > this.opt.maxRepMs) {
-      this.moving = false
+    if (s.t - this.valleyT > this.opt.maxRepMs) {
+      // 超时：当作无效，从当前点重新找谷
+      this.armed = false
+      this.valley = d
+      this.valleyT = s.t
       return null
     }
-    if (d > this.opt.exitDeg) return null
 
-    // 回到静止：本次结束
-    this.moving = false
-    const durationMs = s.t - this.repStart
-    const peak = this.repPeak
+    const fallBelow = this.repValley + this.opt.fallFrac * (this.repPeak - this.repValley)
+    if (d > fallBelow) return null
+
+    // 回落到位：本次结束
+    this.armed = false
+    const durationMs = s.t - this.valleyT // 从最近一次谷底算起
+    const excursion = this.repPeak - this.repValley
+    this.valley = d
+    this.valleyT = s.t
+    return this.accept(excursion, durationMs, s.t, false)
+  }
+
+  /**
+   * 结束一组时结算：如果动作正在半途（已升过幅度门限但还没回落），
+   * 说明用户确实做了这一次，只是记录截止在回落途中——按一次计。
+   * 否则会出现「做到最后一次时按下结束，那一次凭空消失」。
+   */
+  flush(endMs: number): RepEvent | null {
+    if (!this.armed) return null
+    this.armed = false
+    const excursion = this.repPeak - this.repValley
+    const durationMs = endMs - this.valleyT
+    this.valley = this.repPeak
+    this.valleyT = endMs
+    return this.accept(excursion, durationMs, endMs, true)
+  }
+
+  /** 门限判定 + 计数 */
+  private accept(excursion: number, durationMs: number, endMs: number, fromFlush: boolean): RepEvent | null {
     if (durationMs < this.opt.minRepMs) return null
-    if (peak < this.minRange()) return null
+    if (durationMs > this.opt.maxRepMs) return null
+    if (excursion < this.minRange()) return null
     if (this.repOmega < this.opt.minOmegaPeakDps) return null
+    // 相对时长门限：已经数出几次后，某一次比平时慢好几倍，那是挪位置/放下，不是动作。
+    // 用相对值而不是绝对上限，是为了不误杀"整组都做得很慢"的正常训练。
+    if (this.durations.length >= 3) {
+      const sorted = [...this.durations].sort((a, b) => a - b)
+      const med = sorted[Math.floor(sorted.length / 2)]
+      if (durationMs > med * this.opt.durationRatioLimit) return null
+    }
 
     this.count++
-    this.peaks.push(peak)
+    this.peaks.push(excursion)
+    this.durations.push(durationMs)
     const twistRatio = this.repTotalPath > 0 ? this.repTwistPath / this.repTotalPath : 0
     return {
       index: this.count,
-      startMs: this.repStart,
-      endMs: s.t,
+      startMs: this.valleyT,
+      endMs,
       durationMs,
-      rangeDeg: peak,
+      rangeDeg: excursion,
       peakOmegaDps: this.repOmega,
       twistRatio,
       flags: {
-        shortRange: this.opt.targetPeakDeg > 0 && peak < this.opt.targetPeakDeg * 0.7,
-        momentum: this.opt.targetDurationMs > 0 && durationMs < this.opt.targetDurationMs * 0.7,
+        shortRange: this.opt.targetPeakDeg > 0 && excursion < this.opt.targetPeakDeg * 0.7,
+        momentum: !fromFlush && this.opt.targetDurationMs > 0 && durationMs < this.opt.targetDurationMs * 0.7,
         wristFlip: twistRatio > this.opt.twistRatioLimit,
       },
     }
@@ -301,15 +352,15 @@ export class RepCounter {
 
   /**
    * 幅度门限。优先取**下发的标准动作目标峰值**的 45%（0x82 里本来就有目标角度），
-   * 否则用本次会话已计次幅度的中位数自适应——因为不同动作幅度差一倍以上
-   * （实测侧平举约 74°、坐姿推举约 36°），写死绝对角度必然顾此失彼。
+   * 否则用本组已计次幅度的中位数自适应——不同动作幅度差一倍以上
+   * （实测侧平举约 74°、坐姿推举约 34°），写死绝对角度必然顾此失彼。
    */
   private minRange(): number {
-    if (this.opt.targetPeakDeg > 0) return Math.max(15, this.opt.targetPeakDeg * 0.45)
+    if (this.opt.targetPeakDeg > 0) return Math.max(12, this.opt.targetPeakDeg * 0.45)
     if (this.peaks.length >= 2) {
       const sorted = [...this.peaks].sort((a, b) => a - b)
       const med = sorted[Math.floor(sorted.length / 2)]
-      return Math.max(15, med * this.opt.adaptiveFloorRatio)
+      return Math.max(12, med * this.opt.adaptiveFloorRatio)
     }
     return this.opt.minRangeDeg
   }

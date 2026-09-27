@@ -22,6 +22,7 @@ import {
 import { useSubjectStore } from './useSubjectStore'
 import { segmentMotion, describeSegment, type SegmentRange } from '../core/analysis/segmentation'
 import { RepCounter, type RepEvent } from '../core/analysis/repCounter'
+import { shapeTemplateFor } from '../core/analysis/motionTemplates'
 import { analyzeSet, type SetAnalysis } from '../core/analysis/setAnalysis'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
 import { useApiConfigStore } from './useApiConfigStore'
@@ -328,7 +329,13 @@ export const useBleStore = create<BleState>((set) => ({
     try {
       await active.send(bytes)
       // 开始新一组：换一个全新的计数器（在线计数，不重算历史）
-      repCounter = new RepCounter()
+      // 带上该动作的**形状模板**：非标准动作常常幅度不达标但形状仍对，
+      // 归一化相关过线就认这一次（见 motionTemplates.ts）
+      const tpl = shapeTemplateFor(target.actionId)
+      repCounter = new RepCounter({
+        template: tpl?.mean,
+        templateAxis: tpl?.axis,
+      })
       countActive = true
       lastSampleT = 0
       sampleRing = []

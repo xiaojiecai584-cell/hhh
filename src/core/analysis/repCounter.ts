@@ -112,6 +112,50 @@ export interface RepCounterOptions {
   fallTiltRatio: number
   /** 本次 d 的峰值低于它时，跳过上面的姿态判定（某些佩戴方式下 d 变化太小） */
   fallTiltMinDeg: number
+
+  // ---------- ① 自适应噪声底 ----------
+  /**
+   * 武装门限不再写死成绝对值，而是跟着**这个人当前环境下的静息角速度**走：
+   *   gate = clamp(静息水平 × noiseFloorRatio, omegaGateFloor, omegaGateMax)
+   *
+   * 为什么必须这样：实测"轻轻晃动"的 |ω| 上限是 28°/s，而漏检的那批小幅度
+   * 非标准动作 |ω| 中位也是 28°/s —— **两组样本在绝对角速度上完全重叠**，
+   * 一个全局常数不可能同时满足"滤掉晃动"和"数出小幅度动作"。
+   * 换成相对门限后：手稳的人（静息 5°/s）门限降到 18，小幅度动作能被数出；
+   * 手抖的人（静息 15°/s）门限升到 37，晃动不会被计入。
+   */
+  noiseFloorRatio: number
+  /** 门限下限（°/s）：再稳的人也不低于它 */
+  omegaGateFloor: number
+  /** 门限上限（°/s）：再抖的人也不高于它 */
+  omegaGateMax: number
+  /**
+   * **候选武装**门限（°/s）：只要有这点动静就开始跟踪一次候选重复，
+   * 真正是否算数留到结束时判定（角速度门限 或 模板形状）。
+   *
+   * 为什么必须分离：早先用「接受门限」当武装门限，ωmax 只有 16–28°/s 的
+   * 小幅度非标准动作**根本进不了判定流程**，模板匹配也就无从发挥
+   * （实测 9 条漏检里有 6 条卡在这里，拒因显示"从没武装过"）。
+   */
+  armOmegaDps: number
+  /** 估计静息水平的窗口（ms） */
+  noiseWindowMs: number
+  /** 静息水平取窗口内的该分位数（低分位，避开动作本身） */
+  noisePercentile: number
+
+  // ---------- ② 模板形状匹配 ----------
+  /**
+   * 动作主轴的形状模板（来自后端 `build-templates` 的产物，见 motionTemplates.ts）。
+   * 非标准动作常常幅度不达标但**形状仍与标准动作相似**；归一化后求相关，
+   * 相关度高就认这一次——这是单纯调幅度门限做不到的。
+   */
+  template?: number[]
+  /** 模板对应哪条轴（后端 actions 注册表：坐姿推举 gy、站姿侧平举 gx） */
+  templateAxis?: 'gx' | 'gy' | 'gz'
+  /** 归一化相关系数超过它，即使幅度门限没过也算一次 */
+  templateMinCorr: number
+  /** 参与相关计算的最少采样点数 */
+  templateMinSamples: number
 }
 
 export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
@@ -136,6 +180,19 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   fallHoldMs: 260,
   fallTiltRatio: 0.45,
   fallTiltMinDeg: 8,
+  noiseFloorRatio: 3,
+  /**
+   * 门限下限（°/s）。**故意不低于绝对门限**：实测把门限降到 22 时，
+   * 合成测试里峰值 25°/s 的"轻轻晃动"被数出 9 次——**晃动与小幅动作在 |ω| 上真的不可分**。
+   * 所以自适应只允许**往上调**（应对手抖的人），不允许往下调。
+   */
+  omegaGateFloor: 30,
+  omegaGateMax: 80,
+  armOmegaDps: 12,
+  noiseWindowMs: 5000,
+  noisePercentile: 0.2,
+  templateMinCorr: 0.6,
+  templateMinSamples: 24,
 }
 
 interface V3 {
@@ -179,6 +236,14 @@ export class RepCounter {
   private fallStartT = 0
   private lastReject: string | null = null
   private rejects: Record<string, number> = {}
+  /** 最近一段时间的原始角速度模长，用于估计静息水平 */
+  private omegaRing: number[] = []
+  private omegaRingCap: number
+  /** 本次重复期间主轴采样（用于模板形状匹配） */
+  private repAxis: number[] = []
+  /** 本次重复是靠门限过的还是靠模板形状过的 */
+  private lastMatchedBy: 'gate' | 'template' | null = null
+  private lastCorr: number | null = null
 
   private reject(reason: string): null {
     this.lastReject = reason
@@ -202,6 +267,31 @@ export class RepCounter {
 
   constructor(opt: Partial<RepCounterOptions> = {}) {
     this.opt = { ...DEFAULT_REP_OPTIONS, ...opt }
+    this.omegaRingCap = Math.max(20, Math.round(this.opt.noiseWindowMs / 20))
+  }
+
+  /** 各类拒因的累计次数 */
+  get rejectCounts(): Record<string, number> {
+    return { ...this.rejects }
+  }
+
+  /** 当前静息角速度估计（°/s）；样本不足时返回 null */
+  get noiseFloor(): number | null {
+    if (this.omegaRing.length < 60) return null
+    const sorted = [...this.omegaRing].sort((a, b) => a - b)
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * this.opt.noisePercentile))]
+  }
+
+  /** 当前实际使用的武装门限（°/s） */
+  get omegaGate(): number {
+    const floor = this.noiseFloor
+    if (floor === null) return this.opt.minOmegaPeakDps
+    return Math.min(this.opt.omegaGateMax, Math.max(this.opt.omegaGateFloor, floor * this.opt.noiseFloorRatio))
+  }
+
+  /** 最近一次计数的通过方式 */
+  get lastMatchedByGate(): boolean {
+    return this.lastMatchedBy === 'gate'
   }
 
   get repCount(): number {
@@ -223,9 +313,9 @@ export class RepCounter {
     return this.lastReject
   }
 
-  /** 各类拒因的累计次数 */
-  get rejectCounts(): Record<string, number> {
-    return { ...this.rejects }
+  /** 最近一次拒绝时算出的模板相关系数（诊断用） */
+  get lastCorrelation(): number | null {
+    return this.lastCorr
   }
 
   /** 当前是否处于一次重复当中 */
@@ -241,6 +331,9 @@ export class RepCounter {
     this.peaks = []
     this.durations = []
     this.omegaSmooth = 0
+    this.omegaRing = []
+    this.repAxis = []
+    this.lastMatchedBy = null
     this.armed = false
     this.valley = 0
     this.valleyT = 0
@@ -320,6 +413,15 @@ export class RepCounter {
     // 计数标量：gravity 用姿态改变量，gyro 用角速度模长包络
     const metric = this.opt.signal === 'gyro' ? this.omegaSmooth : d
 
+    // 静息水平估计（用于自适应武装门限）。
+    // 只在**安静**时取样：用「低于候选武装门限」定义安静，与武装判据自洽。
+    // 早先用「!armed」定义，但候选武装门限很低、几乎立刻武装，窗口永远填不满，
+    // 自适应门限实际失效（实测静息水平一直显示"未知"）。
+    if (omegaMag < this.opt.armOmegaDps) {
+      this.omegaRing.push(omegaMag)
+      if (this.omegaRing.length > this.omegaRingCap) this.omegaRing.shift()
+    }
+
     // --- 静止参考：只在「明显静止」时缓慢跟随；肢体离开静止就冻结 ---
     if (d <= this.opt.restFreezeDeg && omegaMag < this.opt.restOmegaDps) {
       const kr = 1 - Math.exp(-dtMs / this.opt.restTauMs)
@@ -344,7 +446,7 @@ export class RepCounter {
       //  · gravity：姿态改变量超过门限。
       const armed =
         this.opt.signal === 'gyro'
-          ? omegaMag >= this.opt.minOmegaPeakDps
+          ? omegaMag >= this.opt.armOmegaDps
           : metric - this.valley >= this.minRange()
       if (armed) {
         this.armed = true
@@ -354,6 +456,7 @@ export class RepCounter {
         this.repOmega = omegaMag
         this.repTwistPath = 0
         this.repTotalPath = 0
+        this.repAxis = this.opt.templateAxis ? [s[this.opt.templateAxis]] : []
       }
       return null
     }
@@ -362,6 +465,7 @@ export class RepCounter {
     if (metric > this.repPeak) this.repPeak = metric
     if (omegaMag > this.repOmega) this.repOmega = omegaMag
     if (d > this.repPeakD) this.repPeakD = d
+    if (this.opt.templateAxis) this.repAxis.push(s[this.opt.templateAxis])
     this.repTotalPath += omegaMag * dt
     this.repTwistPath += Math.abs(dot(omega, this.g)) * dt
 
@@ -430,13 +534,21 @@ export class RepCounter {
   ): RepEvent | null {
     if (durationMs < this.opt.minRepMs) return this.reject('too_short')
     if (durationMs > this.opt.maxRepMs) return this.reject('too_long')
-    // 幅度门限：两个信号量纲不同，各自判定
-    if (this.opt.signal === 'gyro') {
-      if (this.repOmega < this.opt.minOmegaPeakDps) return this.reject('omega_below_gate')
-    } else if (excursion < this.minRange()) {
-      return this.reject('range_below_gate')
-    }
-    if (this.repOmega < this.opt.minOmegaPeakDps) return this.reject('omega_below_gate')
+
+    // 门限判定：用**自适应门限**（跟随本人静息水平），不是全局常数
+    const gate = this.omegaGate
+    const gateOk =
+      this.opt.signal === 'gyro'
+        ? this.repOmega >= gate
+        : excursion >= this.minRange() && this.repOmega >= gate
+    // ② 形状第二判据：幅度不达标，但主轴波形与标准动作模板高度相关 → 也算一次。
+    //    非标准动作（幅度不足、轨迹不稳）常常形状仍对，这是单纯调门限救不回来的。
+    const corr = gateOk ? null : this.templateCorrelation()
+    this.lastCorr = corr
+    const shapeOk = corr !== null && corr >= this.opt.templateMinCorr
+    if (!gateOk && !shapeOk) return this.reject('below_gate')
+    this.lastMatchedBy = gateOk ? 'gate' : 'template'
+
     // 相对时长门限：已经数出几次后，某一次比平时慢好几倍，那是挪位置/放下，不是动作。
     // 用相对值而不是绝对上限，是为了不误杀"整组都做得很慢"的正常训练。
     if (this.durations.length >= 3) {
@@ -470,6 +582,45 @@ export class RepCounter {
         wristFlip: twistRatio > this.opt.twistRatioLimit,
       },
     }
+  }
+
+  /**
+   * 本次重复的主轴波形与动作模板的归一化相关系数。
+   * 取绝对值：左右佩戴/轴向相反时相关为负，但形状依然是对的。
+   * 返回 null 表示样本不够或没有模板。
+   */
+  private templateCorrelation(): number | null {
+    const tpl = this.opt.template
+    if (!tpl || tpl.length < 8) return null
+    const src = this.repAxis
+    if (src.length < this.opt.templateMinSamples) return null
+
+    // 线性重采样到模板长度
+    const n = tpl.length
+    const resampled: number[] = []
+    for (let i = 0; i < n; i++) {
+      const p = (i / (n - 1)) * (src.length - 1)
+      const i0 = Math.floor(p)
+      const i1 = Math.min(src.length - 1, i0 + 1)
+      const f = p - i0
+      resampled.push(src[i0] * (1 - f) + src[i1] * f)
+    }
+
+    const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length
+    const ma = mean(resampled)
+    const mb = mean(tpl)
+    let num = 0
+    let da = 0
+    let db = 0
+    for (let i = 0; i < n; i++) {
+      const x = resampled[i] - ma
+      const y = tpl[i] - mb
+      num += x * y
+      da += x * x
+      db += y * y
+    }
+    if (da <= 0 || db <= 0) return null
+    return Math.abs(num / Math.sqrt(da * db))
   }
 
   /**

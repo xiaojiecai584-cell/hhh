@@ -8,6 +8,13 @@ import { createServer } from 'vite'
 const P = 'D:/lindoway/.tmp-data/pkg/fitness_motion_ai_package'
 const server = await createServer({ configFile: 'vite.config.ts', server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' })
 const { RepCounter, DEFAULT_REP_OPTIONS } = await server.ssrLoadModule('/src/core/analysis/repCounter.ts')
+const { shapeTemplateFor } = await server.ssrLoadModule('/src/core/analysis/motionTemplates.ts')
+
+/** 按 actionId 带上形状模板（模拟 store 里的接线方式） */
+function optsFor(actionId, extra = {}) {
+  const t = shapeTemplateFor(actionId)
+  return { signal: 'gyro', template: t?.mean, templateAxis: t?.axis, ...extra }
+}
 
 const manifest = readFileSync(`${P}/data/real_experiment/annotations/manifest.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
 
@@ -61,7 +68,7 @@ async function rate(signal) {
     let many = 0
     const details = []
     for (const s of list) {
-      const { count, evs } = run(s.samples, { signal })
+      const { count, evs } = run(s.samples, optsFor(actionId, { signal }))
       if (count === 1) one++
       else if (count === 0) zero++
       else many++
@@ -172,6 +179,33 @@ for (const opts of [
       )
     }
   }
+}
+
+// ---- 拒绝明细：看自适应门限与模板相关各是多少 ----
+console.log('\n=== 漏检明细（动作1 坐姿推举，前 9 条）===')
+{
+  const list = byAction.get(1) ?? []
+  let shown = 0
+  for (const s of list) {
+    const o = optsFor(1)
+    const c = new RepCounter(o)
+    for (const x of s.samples) c.push(x)
+    c.flush(s.samples[s.samples.length - 1].t)
+    if (c.repCount === 0 && shown < 9) {
+      shown++
+      console.log(
+        `  ${s.sampleId}  ${s.samples.length}点  静息水平=${c.noiseFloor === null ? '未知' : c.noiseFloor.toFixed(1)}  ` +
+          `门限=${c.omegaGate.toFixed(1)}  模板相关=${c.lastCorrelation === null ? '未算' : c.lastCorrelation.toFixed(3)}  ` +
+          `拒因=${c.lastRejectReason ?? 'no_fall_detected'}`,
+      )
+    }
+  }
+  const hit = list.filter((s) => {
+    const c = new RepCounter(optsFor(1))
+    for (const x of s.samples) c.push(x)
+    return c.repCount === 1
+  })
+  console.log(`  （数出来的 ${hit.length} 条里，靠模板形状过的：需要单独统计）`)
 }
 
 // ---- 拒因统计：用最优配置跑一遍，看漏检都卡在哪道闸 ----

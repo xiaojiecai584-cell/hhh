@@ -156,6 +156,23 @@ export interface RepCounterOptions {
   templateMinCorr: number
   /** 参与相关计算的最少采样点数 */
   templateMinSamples: number
+  /**
+   * 直线度下限 = 姿态净位移 / 路径长度 `∫|ω|dt`。**默认关闭**。
+   *
+   * 动机：干净的一次重复是"转过去再转回来"，净位移与路径同量级；随手晃动来回乱转，
+   * 净位移被方向反复抵消，比值极低。实测（213 条真实单次样本 + 晃动对照）：
+   *   真实重复   中位 0.28~0.31（坐姿推举 0.28 / 站姿侧平举 0.31）
+   *   随手晃动   0.064 / 0.114
+   *
+   * **但实测把它当硬门限得不偿失**：真实动作的下尾（p25=0.15）与晃动上界（0.114）
+   * 太近，卡在 0.15 会砍掉约四分之一的真动作——
+   *   当前默认              坐姿推举 87.1% / 站姿侧平举 96.6%
+   *   门限降到 22 + 直线度0.15   75.0% / 91.0%
+   *   门限 26 + 直线度0.18      67.7% / 83.1%
+   * 所以这个量更适合当**置信度/辅助特征**（将来喂给小模型），不适合当硬判据。
+   * 保留该开关是为了让「降门限 + 直线度守卫」这条路可复现，默认 0 = 不启用。
+   */
+  minStraightness: number
 }
 
 export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
@@ -193,6 +210,8 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   noisePercentile: 0.2,
   templateMinCorr: 0.6,
   templateMinSamples: 24,
+  /** 直线度守卫：默认关闭（0），实测确认后再启用——见 options 里的说明 */
+  minStraightness: 0,
 }
 
 interface V3 {
@@ -244,6 +263,11 @@ export class RepCounter {
   /** 本次重复是靠门限过的还是靠模板形状过的 */
   private lastMatchedBy: 'gate' | 'template' | null = null
   private lastCorr: number | null = null
+  /** 最近一次重复的路径长度与净位移（诊断/研究用） */
+  private lastPath: number | null = null
+  private lastDisplacement = 0
+  /** 本次重复开始时的 d，用于算净位移 */
+  private repValleyD = 0
 
   private reject(reason: string): null {
     this.lastReject = reason
@@ -316,6 +340,18 @@ export class RepCounter {
   /** 最近一次拒绝时算出的模板相关系数（诊断用） */
   get lastCorrelation(): number | null {
     return this.lastCorr
+  }
+
+  /**
+   * 最近一次重复的两个积分量（诊断/研究用）：
+   *  · path        —— `∫|ω|dt`，路径长度（一共转了多少度，不管方向）
+   *  · displacement—— 姿态净位移（起点到终点的夹角）
+   * 两者之比「直线度」：干净的重复 ≈0.5（转过去再转回来），随手晃动远小于它。
+   */
+  get lastRepKinematics(): { path: number; displacement: number; straightness: number } | null {
+    if (this.lastPath === null) return null
+    const straightness = this.lastPath > 0 ? this.lastDisplacement / this.lastPath : 0
+    return { path: this.lastPath, displacement: this.lastDisplacement, straightness }
   }
 
   /** 当前是否处于一次重复当中 */
@@ -453,6 +489,7 @@ export class RepCounter {
         this.repValley = this.valley
         this.repPeak = metric
         this.repPeakD = d
+        this.repValleyD = d
         this.repOmega = omegaMag
         this.repTwistPath = 0
         this.repTotalPath = 0
@@ -532,8 +569,19 @@ export class RepCounter {
     endMs: number,
     fromFlush: boolean,
   ): RepEvent | null {
+    // 记录本次的积分量，供诊断（不论通过与否）
+    this.lastPath = this.repTotalPath
+    this.lastDisplacement = this.repPeakD - this.repValleyD
+
     if (durationMs < this.opt.minRepMs) return this.reject('too_short')
     if (durationMs > this.opt.maxRepMs) return this.reject('too_long')
+
+    // 直线度守卫：净位移 / 路径长度。晃动来回乱转，比值极低；
+    // 干净的一次重复"转过去再转回来"，比值在 0.3 量级。启用后可把幅度门限降下来。
+    if (this.opt.minStraightness > 0) {
+      const straightness = this.repTotalPath > 0 ? (this.repPeakD - this.repValleyD) / this.repTotalPath : 0
+      if (straightness < this.opt.minStraightness) return this.reject('low_straightness')
+    }
 
     // 门限判定：用**自适应门限**（跟随本人静息水平），不是全局常数
     const gate = this.omegaGate

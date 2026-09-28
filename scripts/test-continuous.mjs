@@ -60,6 +60,9 @@ function count(samples, opts = {}) {
   return { n: c.repCount, c }
 }
 
+/** 直线度守卫的实验配置（与 diagnose-counter 保持一致） */
+const STRAIGHT_EXPERIMENT = { omegaGateFloor: 22, minStraightness: 0.15 }
+
 console.log('=== 连续整组：12 次（理想输出 12）===\n')
 const cases = [
   { name: '标准：每次 1.6s，间隔 0.6s，峰值 80°/s', opts: { reps: 12 } },
@@ -105,8 +108,19 @@ for (const [name, peak] of [['完全不动', 2], ['轻轻晃动', 25]]) {
     s.push({ t, ax: 0.02 * Math.sin(i / 5), ay: 0.02 * Math.cos(i / 9), az: 1, gx: w * 0.6, gy: w * 0.8, gz: 0 })
     t += 20
   }
-  const { n } = count(s.map((x) => ({ ...x, gx: x.gx / 1.0, gy: x.gy / 1.0 })))
+  const flat = s.map((x) => ({ ...x, gx: x.gx / 1.0, gy: x.gy / 1.0 }))
+  const { n } = count(flat)
   check(`${name}（峰值 ${peak}°/s，20 秒）`, n === 0, `实际 ${n}`)
+  // 直线度守卫的实验配置：门限降到 22 也必须仍是 0
+  const { n: n2 } = count(flat, STRAIGHT_EXPERIMENT)
+  check(`  ↑ 直线度守卫版（门限降到 22）`, n2 === 0, `实际 ${n2}`)
+}
+
+console.log('\n=== 直线度守卫版在连续组上的表现（门限 22 + 直线度≥0.15）===')
+for (const c of cases) {
+  const s = synth(c.opts)
+  const { n } = count(s, STRAIGHT_EXPERIMENT)
+  check(c.name.padEnd(34), n === 12, `实际 ${n}`)
 }
 
 console.log(`\n${fail === 0 ? '连续组计数全部通过' : `${fail} 项未通过`}`)

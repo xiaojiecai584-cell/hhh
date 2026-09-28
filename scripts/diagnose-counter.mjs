@@ -16,6 +16,9 @@ function optsFor(actionId, extra = {}) {
   return { signal: 'gyro', template: t?.mean, templateAxis: t?.axis, ...extra }
 }
 
+/** 直线度守卫的实验配置：把幅度门限降下来，靠直线度挡晃动 */
+const STRAIGHT_EXPERIMENT = { omegaGateFloor: 22, minStraightness: 0.15 }
+
 const manifest = readFileSync(`${P}/data/real_experiment/annotations/manifest.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
 
 function readCsv(rel) {
@@ -178,6 +181,44 @@ for (const opts of [
           `${String(many).padStart(5)}   ${((one / sub.length) * 100).toFixed(1)}%`,
       )
     }
+  }
+}
+
+// ---- 直线度研究：净位移 / 路径长度，看能不能区分"小幅真动作"和"晃动" ----
+console.log('\n=== 直线度（净位移 / 路径长度）===')
+for (const [aid, list] of Object.entries(summary)) {
+  const actionId = Number(aid)
+  const hit = []
+  const miss = []
+  for (const s of list) {
+    const c = new RepCounter(optsFor(actionId))
+    for (const x of s.samples) c.push(x)
+    c.flush(s.samples[s.samples.length - 1].t)
+    const k = c.lastRepKinematics
+    if (!k) continue
+    ;(c.repCount === 1 ? hit : miss).push({ ...k, id: s.sampleId, omega: c.lastCorrelation })
+  }
+  const q = (arr, p) => (arr.length ? [...arr].sort((a, b) => a - b)[Math.floor(p * (arr.length - 1))] : NaN)
+  const fmt = (arr) =>
+    arr.length
+      ? `n=${String(arr.length).padStart(3)}  直线度 p25 ${q(arr.map((x) => x.straightness), 0.25).toFixed(2)}  中位 ${q(arr.map((x) => x.straightness), 0.5).toFixed(2)}  p75 ${q(arr.map((x) => x.straightness), 0.75).toFixed(2)}`
+      : 'n=0'
+  console.log(`  ${NAME[actionId]}`)
+  console.log(`    数出来的：${fmt(hit)}`)
+  console.log(`    漏检的  ：${fmt(miss)}`)
+}
+{
+  // 晃动样本（我们自己的 #201/#202）的直线度，作为对照
+  const rows = JSON.parse(readFileSync('D:/lindoway/.tmp-data/collect.json', 'utf8'))
+  for (const idx of [201, 202]) {
+    const c = new RepCounter(optsFor(2))
+    for (const x of rows[idx].samples) c.push(x)
+    c.flush(rows[idx].samples[rows[idx].samples.length - 1].t)
+    const k = c.lastRepKinematics
+    console.log(
+      `  晃动对照 #${idx}（|ω|max ${Math.max(...rows[idx].samples.map((s) => Math.hypot(s.gx, s.gy, s.gz))).toFixed(0)}°/s）：` +
+        (k ? `路径 ${k.path.toFixed(0)}°  净位移 ${k.displacement.toFixed(1)}°  直线度 ${k.straightness.toFixed(3)}` : '无有效重复段'),
+    )
   }
 }
 

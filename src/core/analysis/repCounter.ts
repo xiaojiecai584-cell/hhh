@@ -90,7 +90,7 @@ export interface RepCounterOptions {
    *    实测坐姿推举漏检 90/124，漏检样本的重力方向改变量中位数只有 8.4°（门限 20°），
    *    而角速度峰值中位 58°/s 是够的——推举时前臂保持竖直，手腕姿态几乎不变。
    */
-  signal: 'gravity' | 'gyro'
+  signal: 'gravity' | 'gyro' | 'accel'
   /** gyro 信号：角速度模长的平滑时间常数（ms）。用于**回落判定**，抑制顶点处的角速度回落
    *  被误当成一次结束。不要用于武装判定——重平滑会把短促爆发削到门限以下。 */
   omegaTauMs: number
@@ -173,6 +173,37 @@ export interface RepCounterOptions {
    * 保留该开关是为了让「降门限 + 直线度守卫」这条路可复现，默认 0 = 不启用。
    */
   minStraightness: number
+
+  // ---------- ③ 加速度信号（传感器装在哑铃上时适用） ----------
+  /**
+   * 用「竖直位移」当计数标量。适用前提：**传感器装在哑铃/器械上**。
+   *
+   * 为什么它比角速度更合适：做推举时哑铃手柄接近水平、只做竖直平移，几乎不旋转。
+   * 实测（213 条真实样本 + 晃动对照，中位数）：
+   *   陀螺仪峰值  推举 68.4°/s vs 晃动 28.3    →  2.4 倍
+   *   位移峰峰值  推举 0.303m  vs 晃动 0.020m  → 14.8 倍
+   * 而且它天然解决「顶点停顿被算成两次」——顶点时位移在最高处，
+   * 「回落」要求位移回到起点附近，停顿不会满足。
+   */
+  /** 竖直方向一次重复必须移动的最小距离（米） */
+  minTravelM: number
+  /** 静止判定：|竖直加速度| 小于它且角速度低于 restOmegaDps，视为静止（用于零速修正） */
+  quietAccelG: number
+  /** 静止时速度向 0 收敛的系数（在线零速修正，抑制积分漂移） */
+  zuptLeak: number
+  /** 位移静息参考的跟随时间常数（ms） */
+  travelRefTauMs: number
+  /**
+   * 用位移判「回落」的比例：`本次位移 ≤ fallTravelRatio × 本次位移峰值`。
+   *
+   * 这是给 gyro 信号用的第二道回落判据。原因：推举时传感器（装在哑铃上）
+   * 几乎不旋转，`d` 判据失效（实测 d 中位仅 4.6°，低于 fallTiltMinDeg 而被跳过），
+   * 于是「顶点停顿」被当成一次结束 → 一次重复被切成两次（实测 9/124 条）。
+   * 位移能补上这一点：顶点时位移在最高处，回落要求位移回到起点附近。
+   * 实测仅用位移当唯一判据时多计从 9 降到 1，说明它确实抓得住这个区别。
+   * 设为 0 表示不启用。
+   */
+  fallTravelRatio: number
 }
 
 export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
@@ -212,6 +243,15 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   templateMinSamples: 24,
   /** 直线度守卫：默认关闭（0），实测确认后再启用——见 options 里的说明 */
   minStraightness: 0,
+  minTravelM: 0.08,
+  quietAccelG: 0.03,
+  zuptLeak: 0.85,
+  travelRefTauMs: 2000,
+  /**
+   * 启用位移回落判据。默认 0.45（与 fallFrac/fallTiltRatio 同量级）。
+   * 实测效果见提交说明——这是修「一次被切成两次」的关键。
+   */
+  fallTravelRatio: 0.45,
 }
 
 interface V3 {
@@ -298,6 +338,11 @@ export class RepCounter {
   private lastCorr: number | null = null
   /** 形状匹配实际用的轴与相关值（诊断用） */
   private lastCorrAxis: 'gx' | 'gy' | 'gz' | null = null
+  /** 竖直方向的速度与位移（accel 信号用），以及位移的静息参考 */
+  private vVert = 0
+  private xVert = 0
+  private xRef = 0
+  private xRefInit = false
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
   private lastPath: number | null = null
   private lastDisplacement = 0
@@ -318,6 +363,8 @@ export class RepCounter {
   private repValley = 0
   /** 本次重复内 d（姿态改变量）的峰值，用于区分「顶点停顿」与「底部休息」 */
   private repPeakD = 0
+  /** 本次重复内竖直位移的峰值（米），用于位移版的回落判定 */
+  private repPeakTravel = 0
   private repOmega = 0
   private repTwistPath = 0
   private repTotalPath = 0
@@ -487,8 +534,26 @@ export class RepCounter {
     const ko = 1 - Math.exp(-dtMs / this.opt.omegaTauMs)
     this.omegaSmooth += (omegaMag - this.omegaSmooth) * ko
 
-    // 计数标量：gravity 用姿态改变量，gyro 用角速度模长包络
-    const metric = this.opt.signal === 'gyro' ? this.omegaSmooth : d
+    // ---------- ③ 竖直加速度积分：v = ∫a_vert，x = ∫v（在线零速修正）----------
+    // a_vert = a·ĝ − 1g，ĝ 就是上面互补滤波得到的单位重力方向
+    const aVert = dot({ x: s.ax, y: s.ay, z: s.az }, this.g) - 1
+    const quiet = Math.abs(aVert) < this.opt.quietAccelG && omegaMag < this.opt.restOmegaDps
+    if (quiet) this.vVert *= this.opt.zuptLeak // 静止时把速度往 0 拉，抑制积分漂移
+    this.vVert += aVert * 9.80665 * dt
+    this.xVert += this.vVert * dt
+    if (!this.xRefInit) {
+      this.xRef = this.xVert
+      this.xRefInit = true
+    } else if (quiet) {
+      const kr = 1 - Math.exp(-dtMs / this.opt.travelRefTauMs)
+      this.xRef += (this.xVert - this.xRef) * kr
+    }
+    /** 相对静息高度的竖直位移（米） */
+    const travel = this.xVert - this.xRef
+
+    // 计数标量：gravity 用姿态改变量，gyro 用角速度模长包络，accel 用竖直位移
+    const metric =
+      this.opt.signal === 'gyro' ? this.omegaSmooth : this.opt.signal === 'accel' ? travel : d
 
     // 静息水平估计（用于自适应武装门限）。
     // 只在**安静**时取样：用「低于候选武装门限」定义安静，与武装判据自洽。
@@ -524,13 +589,16 @@ export class RepCounter {
       const armed =
         this.opt.signal === 'gyro'
           ? omegaMag >= this.opt.armOmegaDps
-          : metric - this.valley >= this.minRange()
+          : this.opt.signal === 'accel'
+            ? metric - this.valley >= this.opt.minTravelM
+            : metric - this.valley >= this.minRange()
       if (armed) {
         this.armed = true
         this.repValley = this.valley
         this.repPeak = metric
         this.repPeakD = d
         this.repValleyD = d
+        this.repPeakTravel = travel
         this.repOmega = omegaMag
         this.repTwistPath = 0
         this.repTotalPath = 0
@@ -543,6 +611,7 @@ export class RepCounter {
     if (metric > this.repPeak) this.repPeak = metric
     if (omegaMag > this.repOmega) this.repOmega = omegaMag
     if (d > this.repPeakD) this.repPeakD = d
+    if (travel > this.repPeakTravel) this.repPeakTravel = travel
     this.repAxes.gx.push(s.gx)
     this.repAxes.gy.push(s.gy)
     this.repAxes.gz.push(s.gz)
@@ -560,8 +629,19 @@ export class RepCounter {
     const fallBelow = this.repValley + this.opt.fallFrac * (this.repPeak - this.repValley)
     // 姿态也要回到低位：顶点停顿与底部休息在 |ω| 上看起来一样，
     // 但顶点时 d 处于本次峰值附近，底部时 d 很小
-    const tiltOk = this.repPeakD < this.opt.fallTiltMinDeg || d <= this.opt.fallTiltRatio * this.repPeakD
-    if (metric > fallBelow || !tiltOk) {
+    // 姿态回落判据：gyro/gravity 信号下用于区分「顶点停顿」与「底部休息」。
+    const tiltOk =
+      this.opt.signal === 'accel' ||
+      this.repPeakD < this.opt.fallTiltMinDeg ||
+      d <= this.opt.fallTiltRatio * this.repPeakD
+    // 位移回落判据：给 gyro 信号补上的第二道。传感器装在哑铃上时推举几乎不旋转，
+    // 上面那条 d 判据会因 repPeakD < fallTiltMinDeg 而跳过，于是顶点停顿被当成一次结束
+    // （实测 9/124 条一次被切成两次）。位移是位置量，顶点时在最高处、回落要求回到起点附近。
+    const travelOk =
+      this.opt.fallTravelRatio <= 0 ||
+      this.repPeakTravel <= 0 ||
+      travel <= this.opt.fallTravelRatio * this.repPeakTravel
+    if (metric > fallBelow || !tiltOk || !travelOk) {
       this.fallStartT = 0 // 又抬起来了：重新计时
       return null
     }
@@ -631,7 +711,9 @@ export class RepCounter {
     const gateOk =
       this.opt.signal === 'gyro'
         ? this.repOmega >= gate
-        : excursion >= this.minRange() && this.repOmega >= gate
+        : this.opt.signal === 'accel'
+          ? excursion >= this.opt.minTravelM
+          : excursion >= this.minRange() && this.repOmega >= gate
     // ② 形状第二判据：幅度不达标，但主轴波形与标准动作模板高度相关 → 也算一次。
     //    非标准动作（幅度不足、轨迹不稳）常常形状仍对，这是单纯调门限救不回来的。
     const corr = gateOk ? null : this.templateCorrelation()

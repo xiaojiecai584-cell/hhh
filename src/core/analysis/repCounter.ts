@@ -232,6 +232,39 @@ const cross = (a: V3, b: V3): V3 => ({
 })
 const angleDeg = (a: V3, b: V3) => (Math.acos(Math.max(-1, Math.min(1, dot(a, b)))) * 180) / Math.PI
 
+/**
+ * 归一化相关系数（取绝对值，容忍轴向相反）。
+ * 先把 `src` 线性重采样到模板长度，再各自去均值求皮尔逊相关。
+ * 返回 null 表示样本不足或方差为零。
+ */
+function correlate(src: number[], tpl: number[], minSamples: number): number | null {
+  if (src.length < minSamples || tpl.length < 8) return null
+  const n = tpl.length
+  const resampled: number[] = []
+  for (let i = 0; i < n; i++) {
+    const p = (i / (n - 1)) * (src.length - 1)
+    const i0 = Math.floor(p)
+    const i1 = Math.min(src.length - 1, i0 + 1)
+    const f = p - i0
+    resampled.push(src[i0] * (1 - f) + src[i1] * f)
+  }
+  const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length
+  const ma = mean(resampled)
+  const mb = mean(tpl)
+  let num = 0
+  let da = 0
+  let db = 0
+  for (let i = 0; i < n; i++) {
+    const x = resampled[i] - ma
+    const y = tpl[i] - mb
+    num += x * y
+    da += x * x
+    db += y * y
+  }
+  if (da <= 0 || db <= 0) return null
+  return Math.abs(num / Math.sqrt(da * db))
+}
+
 /** 加速度计重力方向（设备系单位向量）；模长离开 1g 太多说明线加速度污染严重，返回 null */
 function gravityFromAccel(s: SensorSample): V3 | null {
   const m = Math.hypot(s.ax, s.ay, s.az)
@@ -258,11 +291,13 @@ export class RepCounter {
   /** 最近一段时间的原始角速度模长，用于估计静息水平 */
   private omegaRing: number[] = []
   private omegaRingCap: number
-  /** 本次重复期间主轴采样（用于模板形状匹配） */
-  private repAxis: number[] = []
+  /** 本次重复期间三条轴的采样（用于模板形状匹配） */
+  private repAxes: Record<'gx' | 'gy' | 'gz', number[]> = { gx: [], gy: [], gz: [] }
   /** 本次重复是靠门限过的还是靠模板形状过的 */
   private lastMatchedBy: 'gate' | 'template' | null = null
   private lastCorr: number | null = null
+  /** 形状匹配实际用的轴与相关值（诊断用） */
+  private lastCorrAxis: 'gx' | 'gy' | 'gz' | null = null
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
   private lastPath: number | null = null
   private lastDisplacement = 0
@@ -354,6 +389,11 @@ export class RepCounter {
     return { path: this.lastPath, displacement: this.lastDisplacement, straightness }
   }
 
+  /** 形状匹配实际用的轴（诊断用） */
+  get lastCorrelationAxis(): 'gx' | 'gy' | 'gz' | null {
+    return this.lastCorrAxis
+  }
+
   /** 当前是否处于一次重复当中 */
   get isRepInProgress(): boolean {
     return this.armed
@@ -368,8 +408,9 @@ export class RepCounter {
     this.durations = []
     this.omegaSmooth = 0
     this.omegaRing = []
-    this.repAxis = []
+    this.repAxes = { gx: [], gy: [], gz: [] }
     this.lastMatchedBy = null
+    this.lastCorrAxis = null
     this.armed = false
     this.valley = 0
     this.valleyT = 0
@@ -493,7 +534,7 @@ export class RepCounter {
         this.repOmega = omegaMag
         this.repTwistPath = 0
         this.repTotalPath = 0
-        this.repAxis = this.opt.templateAxis ? [s[this.opt.templateAxis]] : []
+        this.repAxes = { gx: [s.gx], gy: [s.gy], gz: [s.gz] }
       }
       return null
     }
@@ -502,7 +543,9 @@ export class RepCounter {
     if (metric > this.repPeak) this.repPeak = metric
     if (omegaMag > this.repOmega) this.repOmega = omegaMag
     if (d > this.repPeakD) this.repPeakD = d
-    if (this.opt.templateAxis) this.repAxis.push(s[this.opt.templateAxis])
+    this.repAxes.gx.push(s.gx)
+    this.repAxes.gy.push(s.gy)
+    this.repAxes.gz.push(s.gz)
     this.repTotalPath += omegaMag * dt
     this.repTwistPath += Math.abs(dot(omega, this.g)) * dt
 
@@ -633,42 +676,30 @@ export class RepCounter {
   }
 
   /**
-   * 本次重复的主轴波形与动作模板的归一化相关系数。
-   * 取绝对值：左右佩戴/轴向相反时相关为负，但形状依然是对的。
-   * 返回 null 表示样本不够或没有模板。
+   * 本次重复的波形与动作模板的**最大**归一化相关系数（三条轴各算一次取最大）。
+   *
+   * 为什么不是只用 templateAxis：实测后端声明的主轴与数据严重不符——
+   *   坐姿推举 声明 gy，实际方差最大是 gy 的只占 17%（gx 44%、gz 40%）
+   *   站姿侧平举 声明 gx，实际是 gx 的占 0%（gy 63%、gz 37%）
+   * 结果模板虽然按 gx 建，却与样本的 gy 相关 0.81、与 gx 只有 0.31。
+   * 改成三轴取最大后，达到相关 ≥0.6 的样本比例：
+   *   坐姿推举 25% → 48%；站姿侧平举 26% → 81%
+   * 取绝对值是为了容忍轴向相反（左右佩戴）。
    */
   private templateCorrelation(): number | null {
     const tpl = this.opt.template
     if (!tpl || tpl.length < 8) return null
-    const src = this.repAxis
-    if (src.length < this.opt.templateMinSamples) return null
-
-    // 线性重采样到模板长度
-    const n = tpl.length
-    const resampled: number[] = []
-    for (let i = 0; i < n; i++) {
-      const p = (i / (n - 1)) * (src.length - 1)
-      const i0 = Math.floor(p)
-      const i1 = Math.min(src.length - 1, i0 + 1)
-      const f = p - i0
-      resampled.push(src[i0] * (1 - f) + src[i1] * f)
+    let best: number | null = null
+    let bestAxis: 'gx' | 'gy' | 'gz' | null = null
+    for (const axis of ['gx', 'gy', 'gz'] as const) {
+      const c = correlate(this.repAxes[axis], tpl, this.opt.templateMinSamples)
+      if (c !== null && (best === null || c > best)) {
+        best = c
+        bestAxis = axis
+      }
     }
-
-    const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length
-    const ma = mean(resampled)
-    const mb = mean(tpl)
-    let num = 0
-    let da = 0
-    let db = 0
-    for (let i = 0; i < n; i++) {
-      const x = resampled[i] - ma
-      const y = tpl[i] - mb
-      num += x * y
-      da += x * x
-      db += y * y
-    }
-    if (da <= 0 || db <= 0) return null
-    return Math.abs(num / Math.sqrt(da * db))
+    this.lastCorrAxis = bestAxis
+    return best
   }
 
   /**

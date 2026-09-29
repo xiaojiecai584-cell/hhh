@@ -204,6 +204,24 @@ export interface RepCounterOptions {
    * 设为 0 表示不启用。
    */
   fallTravelRatio: number
+  /**
+   * **重新武装所需的位移上升量**（米）。给 gyro 信号用。
+   *
+   * 为什么必须加：原来的武装只看角速度（≥12°/s），而下放全程角速度都高于它，
+   * 于是一次重复的「上举」算一次、「下放」又算一次（实测 7/124 条）。
+   * 加这条后，必须看到"哑铃从低处重新升起来"才算新的一次——
+   * 下放时位移在减小，不会被误判为新重复。
+   *
+   * 若位移信号不可用（传感器不随器械平移，maxAbsTravel 极小）则自动不启用，
+   * 避免在没有平移的动作上把计数卡死。设为 0 显式关闭。
+   *
+   * **当前默认 0（关闭）**：实测它会严重破坏连续做的情况——合成连续组里
+   * 「不停顿」12→6、「不完整放回」11→1、「做得快」12→6。
+   * 原因是「位移是否可用」的判据（maxAbsTravel < 0.05）太脆弱：合成信号没有真实
+   * 竖直平移，位移靠积分噪声偶尔越过阈值，守卫就被误激活把计数卡死。
+   * 要安全启用它，必须先拿到**真实的连续整组数据**来验证，否则不动。
+   */
+  armTravelM: number
 }
 
 export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
@@ -252,6 +270,7 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
    * 实测效果见提交说明——这是修「一次被切成两次」的关键。
    */
   fallTravelRatio: 0.45,
+  armTravelM: 0,
 }
 
 interface V3 {
@@ -343,6 +362,10 @@ export class RepCounter {
   private xVert = 0
   private xRef = 0
   private xRefInit = false
+  /** 本次重复之间位移的谷值（用于要求"重新升起来"才武装） */
+  private travelValley = 0
+  /** 迄今见过的最大位移绝对值：判断位移信号是否可用 */
+  private maxAbsTravel = 0
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
   private lastPath: number | null = null
   private lastDisplacement = 0
@@ -550,6 +573,8 @@ export class RepCounter {
     }
     /** 相对静息高度的竖直位移（米） */
     const travel = this.xVert - this.xRef
+    if (travel < this.travelValley) this.travelValley = travel
+    if (Math.abs(travel) > this.maxAbsTravel) this.maxAbsTravel = Math.abs(travel)
 
     // 计数标量：gravity 用姿态改变量，gyro 用角速度模长包络，accel 用竖直位移
     const metric =
@@ -586,9 +611,14 @@ export class RepCounter {
       //  · gyro：原始角速度绝对值越限即可。绝对门限本身就是"真动 vs 晃动"的判据
       //    （实测晃动 |ω|≤28、真实重复 ≥50），再叠"平滑值必须爬升 25"会误杀短促爆发。
       //  · gravity：姿态改变量超过门限。
+      // 位移上升条件：必须看到"哑铃从低处重新升起来"才算新的一次，
+      // 否则一次重复的「下放」半程会被当成第二次（实测 7/124 条）。
+      // 位移信号不可用（传感器不随器械平移）时自动跳过，避免把计数卡死。
+      const travelRise =
+        this.opt.armTravelM <= 0 || this.maxAbsTravel < 0.05 || travel - this.travelValley >= this.opt.armTravelM
       const armed =
         this.opt.signal === 'gyro'
-          ? omegaMag >= this.opt.armOmegaDps
+          ? omegaMag >= this.opt.armOmegaDps && travelRise
           : this.opt.signal === 'accel'
             ? metric - this.valley >= this.opt.minTravelM
             : metric - this.valley >= this.minRange()
@@ -732,6 +762,7 @@ export class RepCounter {
 
     this.count++
     this.lastReject = null
+    this.travelValley = 0 // 本次结束：位移谷值重新开始累积
     this.peaks.push(excursion)
     this.durations.push(durationMs)
     const twistRatio = this.repTotalPath > 0 ? this.repTwistPath / this.repTotalPath : 0

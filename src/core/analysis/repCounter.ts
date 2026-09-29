@@ -189,6 +189,20 @@ export interface RepCounterOptions {
   minTravelM: number
   /** 静止判定：|竖直加速度| 小于它且角速度低于 restOmegaDps，视为静止（用于零速修正） */
   quietAccelG: number
+  /**
+   * 判定「真正停顿」的角速度上限（°/s）。配合 quietAccelG 与 fallHoldMs 使用。
+   *
+   * 为什么需要：坐姿推举在**最高点和最低点都有明显停顿**（现场确认）。
+   * 原来的回落判据只要求"标量降到峰值的 45% 以下"，这个条件在**下放途中**就满足了，
+   * 于是边界被画在半途，下放的剩余部分又被算成一次（实测 7/124 条多计，
+   * 第二次时长 0.70~0.94s、与第一次间隔≈0）。
+   * 把边界改到「停顿」上之后，整个下放都落在同一次重复内。
+   */
+  pauseOmegaDps: number
+  /** 停顿必须持续多久才算「真停顿」（ms） */
+  pauseMinMs: number
+  /** 是否启用停顿判据（观察到持续停顿后才会真正生效，见 pauseObserved） */
+  requirePause: boolean
   /** 静止时速度向 0 收敛的系数（在线零速修正，抑制积分漂移） */
   zuptLeak: number
   /** 位移静息参考的跟随时间常数（ms） */
@@ -263,6 +277,9 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   minStraightness: 0,
   minTravelM: 0.08,
   quietAccelG: 0.03,
+  pauseOmegaDps: 30,
+  pauseMinMs: 260,
+  requirePause: true,
   zuptLeak: 0.85,
   travelRefTauMs: 2000,
   /**
@@ -366,6 +383,10 @@ export class RepCounter {
   private travelValley = 0
   /** 迄今见过的最大位移绝对值：判断位移信号是否可用 */
   private maxAbsTravel = 0
+  /** 连续处于"真停顿"的样本数 */
+  private quietRun = 0
+  /** 本组是否观察到过持续停顿——只有观察到才启用停顿判据 */
+  private pauseObserved = false
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
   private lastPath: number | null = null
   private lastDisplacement = 0
@@ -576,6 +597,17 @@ export class RepCounter {
     if (travel < this.travelValley) this.travelValley = travel
     if (Math.abs(travel) > this.maxAbsTravel) this.maxAbsTravel = Math.abs(travel)
 
+    // 停顿检测：**每个样本都做**（不能只在武装期间）。
+    // 早先放在武装分支里，导致动作之间的静止段无法建立 pauseObserved，
+    // 而回落判据又在停顿建立之前就先触发了 → 自适应判据等于没生效（实测与改前完全一致）。
+    const quietNow = omegaMag < this.opt.pauseOmegaDps && Math.abs(aVert) < this.opt.quietAccelG
+    if (quietNow) {
+      this.quietRun += 1
+      if (this.quietRun * 20 >= this.opt.pauseMinMs) this.pauseObserved = true
+    } else {
+      this.quietRun = 0
+    }
+
     // 计数标量：gravity 用姿态改变量，gyro 用角速度模长包络，accel 用竖直位移
     const metric =
       this.opt.signal === 'gyro' ? this.omegaSmooth : this.opt.signal === 'accel' ? travel : d
@@ -671,7 +703,14 @@ export class RepCounter {
       this.opt.fallTravelRatio <= 0 ||
       this.repPeakTravel <= 0 ||
       travel <= this.opt.fallTravelRatio * this.repPeakTravel
-    if (metric > fallBelow || !tiltOk || !travelOk) {
+    // 必须是**真正的静止停顿**（现场确认：坐姿推举在最高点与最低点都有明显停顿）。
+    // 只要求"标量回落"会让边界落在下放途中，剩余的下放又被算成一次。
+    //
+    // 但**不能无条件启用**：如果这套动作本身不停顿（连贯做），要求停顿会把计数卡死
+    // （合成连续组实测 12→1）。所以做成自适应——只有真的观察到过持续停顿才启用；
+    // 否则退回原来的回落判据，行为不变。
+    const needPause = this.opt.requirePause && this.pauseObserved
+    if (metric > fallBelow || !tiltOk || !travelOk || (needPause && !quietNow)) {
       this.fallStartT = 0 // 又抬起来了：重新计时
       return null
     }

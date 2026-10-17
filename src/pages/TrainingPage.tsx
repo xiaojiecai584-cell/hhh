@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useBleStore } from '../store/useBleStore'
-import { useBodyStore } from '../store/useBodyStore'
-import { resolveSegments } from '../core/body/bodyProfile'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
-import { templateToImuTarget } from '../core/motion/imuMapping'
+import { START_MODE_LABEL } from '../core/protocol/types'
 import LiveSession from '../components/LiveSession'
 
 const STATE_LABEL: Record<string, string> = {
@@ -12,7 +10,11 @@ const STATE_LABEL: Record<string, string> = {
   disconnected: '未连接',
 }
 
-/** 用户界面：连接 → 选动作 + 目标次数 → 开始。开始后交给 LiveSession 全屏接管。 */
+/**
+ * 用户界面：连接设备 → 等待**设备端**启动（语音关键词 / 隐私倒计时）。
+ * 启动后设备发 0x02 动作开始事件，本页自动进入 LiveSession 全屏计时。
+ * App 不再主动下发 0x82 —— 启动权在设备端。
+ */
 export default function TrainingPage() {
   const state = useBleStore((s) => s.state)
   const deviceName = useBleStore((s) => s.deviceName)
@@ -20,19 +22,17 @@ export default function TrainingPage() {
   const error = useBleStore((s) => s.error)
   const connect = useBleStore((s) => s.connect)
   const disconnect = useBleStore((s) => s.disconnect)
-  const sendStartAction = useBleStore((s) => s.sendStartAction)
   const targetReps = useBleStore((s) => s.targetReps)
-  const setTargetReps = useBleStore((s) => s.setTargetReps)
   const setActive = useBleStore((s) => s.setActive)
+  const currentActionId = useBleStore((s) => s.currentActionId)
+  const lastMode = useBleStore((s) => s.startMode)
 
-  const profile = useBodyStore((s) => s.profile)
-  const seg = useMemo(() => resolveSegments(profile), [profile])
-
-  const [selected, setSelected] = useState<number>(MOTION_TEMPLATES[0]?.actionId ?? 1)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ reps: number; durationMs: number; name: string } | null>(null)
 
   const isConnected = state === 'connected'
+  // 动作以设备发来的 actionId 为准；还没启动过时用模板列表第一个做展示
+  const selected = currentActionId ?? MOTION_TEMPLATES[0]?.actionId ?? 1
   const template = MOTION_TEMPLATES.find((t) => t.actionId === selected) ?? MOTION_TEMPLATES[0]
 
   // 记下本组结果，结束后显示（结束时 repCount 不会被清零，下一次开始才清）
@@ -55,16 +55,6 @@ export default function TrainingPage() {
     }
     wasActive.current = setActive
   }, [setActive, template])
-
-  const start = async () => {
-    if (!template || busy) return
-    setBusy(true)
-    try {
-      await sendStartAction(templateToImuTarget(template, undefined, seg), `开始·${template.name} (0x82)`)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const doConnect = async () => {
     setBusy(true)
@@ -113,58 +103,54 @@ export default function TrainingPage() {
       </div>
 
       <div className="card">
-        <h3 className="card__title">选择动作</h3>
+        <h3 className="card__title">当前动作</h3>
         <div className="seg" style={{ marginTop: 10 }}>
           {MOTION_TEMPLATES.map((t) => (
             <button
               key={t.id}
               className={`seg__btn${selected === t.actionId ? ' seg__btn--active' : ''}`}
-              onClick={() => setSelected(t.actionId)}
-              disabled={setActive}
+              disabled
             >
               {t.name}
             </button>
           ))}
         </div>
+        <p className="card__desc">动作由设备菜单选择，App 会在设备启动后自动切换。</p>
         <div className="train__target">
           <span>本组目标次数</span>
-          <input
-            className="input input--num"
-            type="number"
-            inputMode="numeric"
-            min={0}
-            max={999}
-            value={targetReps}
-            disabled={setActive}
-            onChange={(e) => setTargetReps(Number(e.target.value))}
-          />
-          <span>次（0 = 不限）</span>
+          <b className="train__target-val">{targetReps > 0 ? `${targetReps} 次` : '由设备决定'}</b>
         </div>
+        <p className="card__desc" style={{ marginTop: 8 }}>
+          次数由设备菜单设置，启动也在设备端（语音关键词或隐私倒计时）。
+          设备开始后这里会自动进入计时界面。
+        </p>
       </div>
 
       <div className="card train">
         <div className="train__name">{template?.name}</div>
-        {result ? (
+        {result && (
           <>
             <div className="train__counter">
               <span className="train__count">{result.reps}</span>
-              <span className="train__of">
-                {targetReps > 0 ? `/ ${targetReps}` : '次'}
-              </span>
-            </div>
-            <div className="train__timer">
-              本组完成 · 用时 {fmt(result.durationMs)}
+              <span className="train__of">{targetReps > 0 ? `/ ${targetReps}` : '次'}</span>
             </div>
           </>
+        )}
+        {result ? (
+          <div className="train__timer">本组完成 · 用时 {fmt(result.durationMs)}</div>
         ) : (
           <div className="train__timer">
-            {targetReps > 0 ? `目标 ${targetReps} 次` : '不限次数'}
+            {isConnected ? '等待设备启动…' : '请先连接设备'}
           </div>
         )}
-        <button className="btn btn--xl" onClick={start} disabled={!isConnected || busy || setActive}>
-          开始
-        </button>
-        {!isConnected && <div className="train__hint">请先连接设备</div>}
+        {/* 启动权在设备端（语音关键词 / 隐私倒计时），App 只等待 0x02 动作开始事件 */}
+        <div className="train__waiting">
+          <span className={`dot${isConnected ? ' dot--live' : ''}`} />
+          {isConnected ? '已就绪 · 请在设备上开始' : '未连接'}
+        </div>
+        {lastMode && (
+          <div className="train__hint">上次启动方式：{START_MODE_LABEL[lastMode]}</div>
+        )}
       </div>
     </div>
   )

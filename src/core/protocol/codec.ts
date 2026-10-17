@@ -1,9 +1,10 @@
 import {
   FRAME,
-  type EventPacket,
   type ImuTarget,
   type IncomingFrame,
   type PoseFrame,
+  type StartEventFrame,
+  type StartMode,
 } from './types'
 
 const HDR = 0xaa
@@ -12,7 +13,7 @@ const TAIL = 0x55
 // 各 Type 的 Payload 长度（帧总长 = 1 AA + 1 Type + payload + 1 SUM + 1 55）
 const PAYLOAD_LEN: Record<number, number> = {
   [FRAME.pose]: 22, // 姿态帧
-  [FRAME.event]: 6, // 事件帧（provisional）
+  [FRAME.startEvent]: 3, // 动作开始事件（actionId / mode / reps）→ 帧长 7
   [FRAME.ack]: 1, // ACK（回显动作类型）
 }
 
@@ -99,20 +100,26 @@ export function parsePose(frame: Uint8Array): PoseFrame {
   }
 }
 
-/** 解析 0x02 事件帧（provisional） */
-export function parseEvent(frame: Uint8Array): EventPacket {
-  const flags = frame[3]
+/**
+ * 解析 0x02 动作开始事件（MCU→APP，帧长 7）
+ * 偏移：0 AA | 1 02 | 2 actionId | 3 mode | 4 reps | 5 SUM | 6 55
+ */
+export function parseStartEvent(frame: Uint8Array): StartEventFrame {
   return {
-    type: FRAME.event,
+    type: FRAME.startEvent,
     actionId: frame[2],
-    flags: {
-      wristFlip: (flags & 0x01) !== 0,
-      shortRange: (flags & 0x02) !== 0,
-      momentum: (flags & 0x04) !== 0,
-    },
-    peakAngleDeg: u16be(frame, 4) / 10,
-    durationMs: u16be(frame, 6) * 10,
+    mode: (frame[3] === 2 ? 2 : 1) as StartMode,
+    reps: Math.max(1, Math.min(99, frame[4])),
   }
+}
+
+/** 编码 0x02 动作开始事件（供虚拟设备模拟设备端启动） */
+export function encodeStartEvent(actionId: number, mode: StartMode, reps: number): Uint8Array {
+  const p = new Uint8Array(3)
+  p[0] = actionId
+  p[1] = mode
+  p[2] = Math.max(1, Math.min(99, Math.round(reps)))
+  return encodeFrame(FRAME.startEvent, p)
 }
 
 /** 解析 0x80 ACK */
@@ -124,7 +131,7 @@ export function parseAck(frame: Uint8Array): { type: 0x80; actionId: number } {
 export function decodeFrame(frame: Uint8Array): IncomingFrame | null {
   const type = frame[1]
   if (type === FRAME.pose) return parsePose(frame)
-  if (type === FRAME.event) return parseEvent(frame)
+  if (type === FRAME.startEvent) return parseStartEvent(frame)
   if (type === FRAME.ack) return parseAck(frame)
   return null
 }
@@ -186,19 +193,6 @@ export function encodePose(p: PoseFrame): Uint8Array {
   put16be(payload, 18, Math.round(p.gyDps * 10))
   put16be(payload, 20, Math.round(p.gzDps * 10))
   return encodeFrame(FRAME.pose, payload)
-}
-
-/** 编码 0x02 事件帧（供虚拟设备生成原始字节） */
-export function encodeEvent(e: EventPacket): Uint8Array {
-  const payload = new Uint8Array(6)
-  payload[0] = e.actionId
-  payload[1] =
-    (e.flags.wristFlip ? 0x01 : 0) |
-    (e.flags.shortRange ? 0x02 : 0) |
-    (e.flags.momentum ? 0x04 : 0)
-  put16be(payload, 2, Math.round(e.peakAngleDeg * 10))
-  put16be(payload, 4, Math.round(e.durationMs / 10))
-  return encodeFrame(FRAME.event, payload)
 }
 
 /** 编码 0x80 ACK（供虚拟设备生成原始字节） */

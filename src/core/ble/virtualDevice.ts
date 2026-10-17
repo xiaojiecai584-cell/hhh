@@ -1,11 +1,12 @@
 import type { BLETransport, TransportState } from './transport'
-import { encodeAck, encodeEvent, encodePose, parseImuTarget } from '../protocol/codec'
+import { encodeAck, encodePose, encodeStartEvent, parseImuTarget } from '../protocol/codec'
 import {
   FRAME,
   type AckFrame,
-  type EventPacket,
   type IncomingFrame,
   type PoseFrame,
+  type StartEventFrame,
+  type StartMode,
 } from '../protocol/types'
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -65,36 +66,42 @@ export class VirtualDeviceTransport implements BLETransport {
   async send(data: Uint8Array) {
     const type = data[1]
     if (type === FRAME.startAction) {
+      // 旧路径（0x82）：启动权已移到设备端，这里仅保留给调试站手动触发
       const t = parseImuTarget(data)
-      this.actionId = t.actionId
       const ar = Math.abs(t.rollDeg)
       const ap = Math.abs(t.pitchDeg)
       const ay = Math.abs(t.yawDeg)
-      if (ar >= ap && ar >= ay) {
-        this.axis = 'roll'
-        this.peakAngleDeg = t.rollDeg
-      } else if (ap >= ar && ap >= ay) {
-        this.axis = 'pitch'
-        this.peakAngleDeg = t.pitchDeg
-      } else {
-        this.axis = 'yaw'
-        this.peakAngleDeg = t.yawDeg
-      }
-      this.running = true
-      this.emitAck(this.actionId)
-      this.startReps()
+      const axis = ar >= ap && ar >= ay ? 'roll' : ap >= ar && ap >= ay ? 'pitch' : 'yaw'
+      const peak = axis === 'roll' ? t.rollDeg : axis === 'pitch' ? t.pitchDeg : t.yawDeg
+      this.deviceStart(t.actionId, 2, 10, axis, peak)
+      this.emitAck(t.actionId)
       return
     }
     if (type === FRAME.stopAction) {
-      // 0x83 停止采集：停止上行（0x01 姿态流与 0x02 事件）
+      // 0x83 停止采集：停止上行
       this.running = false
       this.stopReps()
     }
   }
 
+  /**
+   * 模拟**设备端启动**：真实设备在用户语音/倒计时后自己开始，
+   * 然后发 0x02 动作开始事件通知 App。虚拟设备用这个方法复现。
+   */
+  deviceStart(actionId: number, mode: StartMode, reps: number, axis?: 'roll' | 'pitch' | 'yaw', peakAngleDeg?: number) {    this.actionId = actionId
+    this.axis = axis ?? (actionId === 2 ? 'roll' : 'pitch')
+    this.peakAngleDeg = peakAngleDeg ?? (actionId === 2 ? 90 : 180)
+    this.running = true
+    const e: StartEventFrame = { type: FRAME.startEvent, actionId, mode, reps }
+    const raw = encodeStartEvent(actionId, mode, reps)
+    this.frameCbs.forEach((cb) => cb(e, raw))
+    this.startReps()
+  }
+
+  /** 每组开始时回一次 ACK（设备已装载动作），之后不再周期性发事件 */
   private startReps() {
     this.stopReps()
-    this.repTimer = setInterval(() => this.emitEvent(), 2000) // 默认节律 30 次/分
+    this.repTimer = setInterval(() => this.emitAck(this.actionId), 2000)
   }
 
   private stopReps() {
@@ -108,25 +115,6 @@ export class VirtualDeviceTransport implements BLETransport {
     const a: AckFrame = { type: FRAME.ack, actionId }
     const raw = encodeAck(a)
     this.frameCbs.forEach((cb) => cb(a, raw))
-  }
-
-  private emitEvent() {
-    const r = Math.random()
-    const flags = {
-      wristFlip: r < 0.12,
-      shortRange: r >= 0.12 && r < 0.3,
-      momentum: r >= 0.3 && r < 0.4,
-    }
-    const peak = flags.shortRange ? this.peakAngleDeg * 0.68 : this.peakAngleDeg
-    const e: EventPacket = {
-      type: FRAME.event,
-      actionId: this.actionId,
-      flags,
-      peakAngleDeg: round1(peak + (Math.random() * 3 - 1.5)),
-      durationMs: Math.round(1600 + Math.random() * 700),
-    }
-    const raw = encodeEvent(e)
-    this.frameCbs.forEach((cb) => cb(e, raw))
   }
 
   private emitPose() {

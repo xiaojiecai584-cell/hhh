@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useBleStore, CONDITION_LABEL, type LoggedEvent, type ManualLabel, type RecCondition } from '../store/useBleStore'
 import { useBleConfigStore } from '../store/useBleConfigStore'
 import { useBodyStore } from '../store/useBodyStore'
-import { ACTION_NAMES } from '../core/protocol/types'
+import { ACTION_NAMES, START_MODE_LABEL } from '../core/protocol/types'
 import { ACTION_RULES, endpointThresholdFor } from '../core/analysis/ruleClassifier'
 import { resolveSegments } from '../core/body/bodyProfile'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
@@ -37,6 +37,7 @@ export default function ConnectPage() {
   const connect = useBleStore((s) => s.connect)
   const disconnect = useBleStore((s) => s.disconnect)
   const sendStartAction = useBleStore((s) => s.sendStartAction)
+  const simulate = useBleStore((s) => s.simulateDeviceStart)
   const clearEvents = useBleStore((s) => s.clearEvents)
   const rawRx = useBleStore((s) => s.rawRx)
   const rxCounts = useBleStore((s) => s.rxCounts)
@@ -297,12 +298,28 @@ export default function ConnectPage() {
           <div className="btn-grid" style={{ marginTop: 10 }}>
             {MOTION_TEMPLATES.map((t) => (
               <button
+                key={`sim-${t.id}`}
+                className="btn btn--ghost"
+                onClick={() => simulate(t.actionId, 1, targetReps > 0 ? targetReps : 10)}
+                disabled={busy}
+              >
+                模拟设备启动·{t.name}
+              </button>
+            ))}
+          </div>
+          <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            启动权在设备端（语音关键词 / 隐私倒计时）。上面这组按钮让**虚拟设备**发出一帧
+            0x02 动作开始事件，用于在没有真机时验证 App 的响应。
+          </p>
+          <div className="btn-grid" style={{ marginTop: 10 }}>
+            {MOTION_TEMPLATES.map((t) => (
+              <button
                 key={t.id}
                 className="btn btn--ghost"
                 onClick={() => startPreset(t.actionId)}
                 disabled={busy}
               >
-                开始·{t.name}
+                旧·下发 0x82·{t.name}
               </button>
             ))}
           </div>
@@ -653,26 +670,14 @@ function PoseStat({ label, value }: { label: string; value: string }) {
 }
 
 function EventItem({ e }: { e: LoggedEvent }) {
-  const hasFlag = e.flags.wristFlip || e.flags.shortRange || e.flags.momentum
   return (
     <div className="log-item">
       <div className="log-item__head">
-        <span style={{ fontWeight: 600 }}>判姿事件</span>
+        <span style={{ fontWeight: 600 }}>设备启动 · {START_MODE_LABEL[e.mode]}</span>
         <span className="log-item__meta">{ACTION_NAMES[e.actionId] ?? `动作${e.actionId}`}</span>
       </div>
       <div className="muted" style={{ fontSize: 12 }}>
-        峰值 {e.peakAngleDeg.toFixed(1)}° · 耗时 {(e.durationMs / 1000).toFixed(2)}s
-      </div>
-      <div className="flag-row">
-        {hasFlag ? (
-          <>
-            {e.flags.wristFlip && <span className="flag">腕部翻转</span>}
-            {e.flags.shortRange && <span className="flag">行程不足</span>}
-            {e.flags.momentum && <span className="flag">借力甩动</span>}
-          </>
-        ) : (
-          <span className="flag flag--ok">动作标准</span>
-        )}
+        本组目标 {e.reps} 次（次数由设备菜单设置）
       </div>
     </div>
   )

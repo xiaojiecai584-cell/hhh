@@ -8,9 +8,10 @@ import {
   ACTION_NAMES,
   FRAME,
   type AckFrame,
-  type EventPacket,
   type ImuTarget,
   type PoseFrame,
+  type StartEventFrame,
+  type StartMode,
 } from '../core/protocol/types'
 import { ERROR_SEVERITY, classifyMotion } from '../core/analysis/ruleClassifier'
 import {
@@ -27,7 +28,7 @@ import { analyzeSet, type SetAnalysis } from '../core/analysis/setAnalysis'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
 import { useApiConfigStore } from './useApiConfigStore'
 import { useDataStore } from './useDataStore'
-export type LoggedEvent = EventPacket & { id: number }
+export type LoggedEvent = StartEventFrame & { id: number }
 /** 在线计数产出的每一次重复；带上该次的原始样本，供动作分析（后端 /api/v1/motion/analyze）使用 */
 export type RepRecord = RepEvent & { samples: SensorSample[] }
 export interface TxEntry {
@@ -137,7 +138,16 @@ interface BleState {
   targetReps: number
   setActive: boolean
   currentActionId: number | null
+  /** 本组的启动方式（来自设备的 0x02 帧） */
+  startMode: StartMode | null
   pending: PendingRecord | null
+  /**
+   * **设备端启动**：收到 0x02 动作开始事件后开一组。
+   * actionId / mode / reps 全部以设备为准——App 不再主动下发 0x82。
+   */
+  beginSetFromDevice: (ev: StartEventFrame) => void
+  /** 调试用：让虚拟设备模拟一次"设备端启动"（真实设备由语音/倒计时自行触发） */
+  simulateDeviceStart: (actionId: number, mode: StartMode, reps: number) => void
   /** 最近一组的分析结果（一组结束时自动生成） */
   lastReport: SetReport | null
   analyzing: boolean
@@ -248,6 +258,9 @@ function attach(t: BLETransport) {
           events: [...s.events, { ...frame, id }].slice(-200),
         }
       })
+      // **启动权在设备端**：收到 0x02 动作开始事件就开一组，
+      // actionId / mode / reps 全部以设备为准（不再由 App 下发 0x82）
+      if (frame.type === FRAME.startEvent) useBleStore.getState().beginSetFromDevice(frame)
     }),
   )
   recordBuffer = []
@@ -289,6 +302,7 @@ export const useBleStore = create<BleState>((set) => ({
   targetReps: 0,
   setActive: false,
   currentActionId: null,
+  startMode: null,
   pending: null,
   lastReport: null,
   analyzing: false,
@@ -323,14 +337,56 @@ export const useBleStore = create<BleState>((set) => ({
     set({ deviceName: null, latestPose: null, lastAck: null })
   },
 
+  /**
+   * 设备端启动（0x02 到达时调用）：开一组，目标次数用设备给的 reps。
+   * 这是现在的**主启动路径**——启动权在设备端（语音关键词 / 隐私倒计时）。
+   */
+  beginSetFromDevice: (ev) => {
+    const actionId = ev.actionId || 1
+    // 开始新一组：换一个全新的计数器（在线计数，不重算历史）
+    // 带上该动作的**形状模板**：非标准动作常常幅度不达标但形状仍对，
+    // 归一化相关过线就认这一次（见 motionTemplates.ts）
+    const tpl = shapeTemplateFor(actionId)
+    repCounter = new RepCounter({
+      template: tpl?.mean,
+      templateAxis: tpl?.axis,
+    })
+    countActive = true
+    lastSampleT = 0
+    sampleRing = []
+    autoStopping = false
+    setId = `set-${Date.now().toString(36)}`
+    setStartedAt = Date.now()
+    snapshot = null
+    targetRepsFlag = ev.reps
+    set((s) => ({
+      txLog: [...s.txLog, { id: seq++, hex: '—', label: `设备启动 0x02（${ev.mode === 1 ? '语音' : '隐私'} · ${ev.reps} 次）` }].slice(-50),
+      currentActionId: actionId,
+      startMode: ev.mode,
+      targetReps: ev.reps,
+      repCount: 0,
+      repEvents: [],
+      lastReport: null,
+      analyzeError: null,
+      setActive: true,
+    }))
+  },
+
+  /**
+   * 调试用：命令虚拟设备模拟一次「设备端启动」，让它发一帧 0x02。
+   * 真实设备不经过这里——它由自己语音/倒计时触发。
+   */
+  simulateDeviceStart: (actionId, mode, reps) => {
+    if (!active?.simulateDeviceStart) return
+    active.simulateDeviceStart(actionId, mode, reps)
+  },
+
+  /** 旧路径（0x82 下发开始）：启动权已移到设备端，仅保留给调试站手动触发 */
   sendStartAction: async (target, label) => {
     if (!active) return
     const bytes = encodeStartAction(target)
     try {
       await active.send(bytes)
-      // 开始新一组：换一个全新的计数器（在线计数，不重算历史）
-      // 带上该动作的**形状模板**：非标准动作常常幅度不达标但形状仍对，
-      // 归一化相关过线就认这一次（见 motionTemplates.ts）
       const tpl = shapeTemplateFor(target.actionId)
       repCounter = new RepCounter({
         template: tpl?.mean,
@@ -344,7 +400,7 @@ export const useBleStore = create<BleState>((set) => ({
       setStartedAt = Date.now()
       snapshot = null
       set((s) => ({
-        txLog: [...s.txLog, { id: seq++, hex: toHex(bytes), label: label ?? '开始动作' }].slice(-50),
+        txLog: [...s.txLog, { id: seq++, hex: toHex(bytes), label: label ?? '开始动作 (0x82 · 调试)' }].slice(-50),
         currentActionId: target.actionId,
         repCount: 0,
         repEvents: [],

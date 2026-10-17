@@ -4,11 +4,11 @@
 export type Axis = 1 | 2 | 3 | 4 | 5 // 1肩屈 2肩外展 3肘屈 4髋屈 5膝屈
 
 export const FRAME = {
-  pose: 0x01, // 姿态帧 50Hz
-  event: 0x02, // 事件帧（判姿报警）
+  pose: 0x01, // 姿态帧 50Hz（MCU→APP）
+  startEvent: 0x02, // **动作开始事件（MCU→APP）**：启动权在设备端，见下方 StartEventFrame
   ack: 0x80, // ACK（回显动作类型）
-  startAction: 0x82, // 开始动作（目标姿态帧，下发目标姿态）
-  stopAction: 0x83, // 停止采集（App 数够预设次数后下发，MCU 收到即停止上行）
+  startAction: 0x82, // 旧：APP 下发开始动作（目标姿态帧）。启动权已移到设备端，仅调试时使用
+  stopAction: 0x83, // 停止采集（APP 主动结束本组时下发）
 } as const
 
 // 0x01 姿态帧
@@ -26,13 +26,28 @@ export interface PoseFrame {
   gzDps: number // ÷10
 }
 
-// 0x02 事件帧（payload 待定，此处为 provisional：动作类型 + 代偿标志位 + 峰值角度 + 耗时）
-export interface EventPacket {
+/** 设备端启动方式 */
+export type StartMode = 1 | 2 // 1 = 语音模式（关键词触发），2 = 隐私模式（倒计时）
+
+export const START_MODE_LABEL: Record<StartMode, string> = {
+  1: '语音模式',
+  2: '隐私模式',
+}
+
+/**
+ * 0x02 动作开始事件（7 字节，MCU→APP）
+ *
+ * 偏移 0 帧头 0xAA | 1 类型 0x02 | 2 actionId | 3 mode | 4 reps | 5 SUM | 6 帧尾 0x55
+ * SUM = 偏移 0~4 共 5 字节累加取低 8 位。
+ *
+ * **启动权在设备端**：用户在设备上通过语音关键词或倒计时启动，设备发这一帧通知 App。
+ * App 收到后开始计数、并按本帧的 reps 作为本组目标次数（不再由 App 下发 0x82）。
+ */
+export interface StartEventFrame {
   type: 0x02
-  actionId: number
-  flags: { wristFlip: boolean; shortRange: boolean; momentum: boolean }
-  peakAngleDeg: number
-  durationMs: number
+  actionId: number // 1 = 坐姿推举，2 = 站姿侧平举
+  mode: StartMode
+  reps: number // 1~99，设备菜单设置，默认 10
 }
 
 // 0x80 ACK
@@ -41,7 +56,7 @@ export interface AckFrame {
   actionId: number
 }
 
-export type IncomingFrame = PoseFrame | EventPacket | AckFrame
+export type IncomingFrame = PoseFrame | StartEventFrame | AckFrame
 
 // 0x82 目标姿态参数：字段与 0x01 姿态帧一致（同缩放、同大端），表示标准动作的 IMU 目标值
 export interface ImuTarget {

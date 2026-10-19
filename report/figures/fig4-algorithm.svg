@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1010" viewBox="0 0 900 1010" font-family="'Microsoft YaHei','Segoe UI',sans-serif">
+  <defs>
+    <marker id="a4" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L8,4 L0,8 z" fill="#1d4ed8"/>
+    </marker>
+    <marker id="a4g" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L8,4 L0,8 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect width="900" height="1010" fill="#ffffff"/>
+  <text x="24" y="22" font-size="13" fill="#6b7280">Lindoway 上位机 · 在线计数与代偿判别算法流程图（每帧执行一次，全程无网络依赖）</text>
+
+  <!-- 入口 -->
+  <rect x="200" y="36" width="200" height="40" rx="20" fill="#059669" stroke="#059669"/>
+  <text x="300" y="62" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">repCounter.push(sample)</text>
+  <line x1="300" y1="76" x2="300" y2="82" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- dt 合法 -->
+  <polygon points="130,126 300,86 470,126 300,166" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="131" font-size="13.5" fill="#065f46" text-anchor="middle">dt 合法（≤500 ms）？</text>
+  <line x1="300" y1="166" x2="300" y2="176" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+  <text x="310" y="180" font-size="11" fill="#6b7280">是</text>
+  <line x1="470" y1="126" x2="512" y2="126" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#a4g)"/>
+  <text x="482" y="118" font-size="11" fill="#6b7280">否</text>
+
+  <!-- 互补滤波 -->
+  <rect x="130" y="180" width="340" height="70" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="204" font-size="13.5" fill="#111827" text-anchor="middle" font-weight="700">互补滤波更新重力方向 ĝ</text>
+  <text x="300" y="226" font-size="12.5" fill="#374151" text-anchor="middle">Rodrigues 旋转 ĝ·dt + 加速度计回拉（κ=0.04）</text>
+  <line x1="300" y1="250" x2="300" y2="260" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- 观测量 -->
+  <rect x="130" y="264" width="340" height="70" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="288" font-size="13.5" fill="#111827" text-anchor="middle" font-weight="700">提取三个观测量</text>
+  <text x="300" y="310" font-size="12" fill="#374151" text-anchor="middle">姿态改变量 d ∠(ĝ,ĝ_ref) · 平滑角速度 ω̄ · 竖直位移 travel</text>
+  <line x1="300" y1="334" x2="300" y2="344" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- 停顿检测 -->
+  <rect x="130" y="348" width="340" height="76" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="370" font-size="13.5" fill="#111827" text-anchor="middle" font-weight="700">停顿检测（每个样本都做）</text>
+  <text x="300" y="392" font-size="12" fill="#374151" text-anchor="middle">|ω| &lt; 30°/s 且 |a − 1g| &lt; 0.03 g</text>
+  <text x="300" y="412" font-size="12" fill="#374151" text-anchor="middle">持续 ≥ 400 ms → 置 pauseObserved</text>
+  <line x1="300" y1="424" x2="300" y2="434" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- 自适应门限 -->
+  <rect x="130" y="438" width="340" height="60" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="462" font-size="13.5" fill="#111827" text-anchor="middle" font-weight="700">静息噪声底 → 自适应门限</text>
+  <text x="300" y="483" font-size="12" fill="#374151" text-anchor="middle">5 s 窗口 20 分位 ×3，钳位 30~80°/s（只允许上调）</text>
+  <line x1="300" y1="498" x2="300" y2="508" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- 已武装 -->
+  <polygon points="130,548 300,508 470,548 300,588" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="553" font-size="13.5" fill="#065f46" text-anchor="middle">已武装？</text>
+  <line x1="300" y1="588" x2="300" y2="598" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+  <text x="310" y="602" font-size="11" fill="#6b7280">是</text>
+  <line x1="470" y1="548" x2="512" y2="548" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#a4g)"/>
+  <text x="482" y="540" font-size="11" fill="#6b7280">否</text>
+
+  <!-- 累积 -->
+  <rect x="130" y="602" width="340" height="70" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="626" font-size="13.5" fill="#111827" text-anchor="middle" font-weight="700">累积本次重复的统计量</text>
+  <text x="300" y="648" font-size="12" fill="#374151" text-anchor="middle">峰值 · 路径 ∫|ω|dt · 绕重力轴扭转 ∫|ω·ĝ|dt · 三轴波形</text>
+  <line x1="300" y1="672" x2="300" y2="682" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- 边界判定 -->
+  <rect x="130" y="686" width="340" height="76" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="708" font-size="13.5" fill="#111827" text-anchor="middle" font-weight="700">本次重复的边界判定（两种模式）</text>
+  <text x="300" y="730" font-size="12" fill="#374151" text-anchor="middle">语法模式：底停顿 → 顶停顿 → 底停顿 才算一次</text>
+  <text x="300" y="750" font-size="12" fill="#374151" text-anchor="middle">回落模式：回落到峰谷差 45% 且持续 ≥260 ms</text>
+  <line x1="300" y1="762" x2="300" y2="772" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- accept -->
+  <rect x="130" y="776" width="340" height="70" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="800" font-size="13.5" fill="#111827" text-anchor="middle" font-weight="700">accept()：三道判据</text>
+  <text x="300" y="822" font-size="12" fill="#374151" text-anchor="middle">时长 0.7~15 s → 门限 或 模板相关 ≥0.6 → 剔离群</text>
+  <line x1="300" y1="846" x2="300" y2="856" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- 计次 -->
+  <rect x="130" y="860" width="340" height="60" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="300" y="884" font-size="13.5" fill="#111827" text-anchor="middle" font-weight="700">计次：生成 RepEvent</text>
+  <text x="300" y="905" font-size="12" fill="#374151" text-anchor="middle">次数 · 起止时间 · 行程角 · 峰值角速度 · 扭转比 · 标志</text>
+  <line x1="300" y1="920" x2="300" y2="930" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a4)"/>
+
+  <!-- 返回 -->
+  <rect x="200" y="934" width="200" height="40" rx="20" fill="#059669" stroke="#059669"/>
+  <text x="300" y="960" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">返回 RepEvent / null</text>
+
+  <!-- 右侧说明 -->
+  <rect x="520" y="92" width="356" height="94" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="6 4"/>
+  <text x="532" y="114" font-size="12" fill="#92400e" font-weight="700">丢弃与中断保护</text>
+  <text x="532" y="134" font-size="11.5" fill="#78350f">· dt ≤ 0：直接丢弃，避免除零</text>
+  <text x="532" y="153" font-size="11.5" fill="#78350f">· dt &gt; 500 ms：重置重力参考与武装状态，</text>
+  <text x="532" y="172" font-size="11.5" fill="#78350f">　防止把两段数据拼成一次重复</text>
+
+  <rect x="520" y="506" width="356" height="92" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="6 4"/>
+  <text x="532" y="528" font-size="12" fill="#92400e" font-weight="700">未武装时的两件事</text>
+  <text x="532" y="548" font-size="11.5" fill="#78350f">· 谷值跟随：把本次起点压到最低点</text>
+  <text x="532" y="567" font-size="11.5" fill="#78350f">· 武装条件用原始 |ω| ≥ 12°/s，而非平滑值</text>
+  <text x="532" y="586" font-size="11.5" fill="#78350f">　重平滑会把短促爆发削到门限以下</text>
+
+  <rect x="520" y="772" width="356" height="86" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="6 4"/>
+  <text x="532" y="794" font-size="12" fill="#92400e" font-weight="700">为什么要有第二判据（模板相关）</text>
+  <text x="532" y="814" font-size="11.5" fill="#78350f">· 非标准动作常幅度不足但波形仍与标准动作</text>
+  <text x="532" y="833" font-size="11.5" fill="#78350f">　相似，单纯调幅度门限救不回来</text>
+  <text x="532" y="852" font-size="11.5" fill="#78350f">· 三轴各算一次相关取最大，容忍左右佩戴</text>
+
+  <rect x="520" y="872" width="356" height="78" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="6 4"/>
+  <text x="532" y="894" font-size="12" fill="#92400e" font-weight="700">与固件的衔接</text>
+  <text x="532" y="914" font-size="11.5" fill="#78350f">· RepEvent 字段与 0x02 事件帧对齐</text>
+  <text x="532" y="933" font-size="11.5" fill="#78350f">· 固件将来自己出 0x02 时可无缝换数据源</text>
+
+  <text x="24" y="998" font-size="12" fill="#9ca3af">注：参数取自 src/core/analysis/repCounter.ts 的 DEFAULT_REP_OPTIONS；模板来自 motionTemplates.ts（后端 build-templates 产物）。</text>
+</svg>

@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1150" viewBox="0 0 900 1150" font-family="'Microsoft YaHei','Segoe UI',sans-serif">
+  <defs>
+    <marker id="a3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L8,4 L0,8 z" fill="#1d4ed8"/>
+    </marker>
+    <marker id="a3g" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L8,4 L0,8 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect width="900" height="1150" fill="#ffffff"/>
+  <text x="24" y="22" font-size="13" fill="#6b7280">Lindoway 上位机 · 主程序流程图（连接 → 设备端启动 → 采集计数 → 出组报告）</text>
+
+  <!-- 开始 -->
+  <rect x="230" y="36" width="200" height="40" rx="20" fill="#1d4ed8" stroke="#1d4ed8"/>
+  <text x="330" y="62" font-size="14.5" font-weight="700" fill="#ffffff" text-anchor="middle">开始：打开上位机训练页</text>
+  <line x1="330" y1="76" x2="330" y2="90" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 连接 -->
+  <rect x="170" y="94" width="320" height="60" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+  <text x="330" y="118" font-size="14" fill="#111827" text-anchor="middle">请求设备 → GATT 连接 → 取 NUS 服务</text>
+  <text x="330" y="140" font-size="14" fill="#111827" text-anchor="middle">→ 读写特征 → startNotifications</text>
+  <line x1="330" y1="154" x2="330" y2="168" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 等待 -->
+  <rect x="200" y="172" width="260" height="52" rx="26" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text x="330" y="203" font-size="13.5" fill="#5b21b6" text-anchor="middle">等待设备端启动（语音 / 倒计时）</text>
+  <line x1="330" y1="224" x2="330" y2="238" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 收到 0x02 -->
+  <polygon points="180,280 330,242 480,280 330,318" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.8"/>
+  <text x="330" y="285" font-size="13.5" fill="#312e81" text-anchor="middle">收到 0x02 事件？</text>
+  <text x="342" y="334" font-size="11.5" fill="#6b7280">是</text>
+  <line x1="330" y1="318" x2="330" y2="332" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 0x02 否 回路 -->
+  <polyline points="180,280 136,280 136,198 196,198" fill="none" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#a3g)"/>
+  <text x="150" y="272" font-size="11.5" fill="#6b7280">否</text>
+
+  <!-- 开一组 -->
+  <rect x="170" y="336" width="320" height="62" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+  <text x="330" y="360" font-size="14" fill="#111827" text-anchor="middle">开一组：新建 RepCounter 并装载形状模板</text>
+  <text x="330" y="382" font-size="14" fill="#111827" text-anchor="middle">清空采样环，目标次数取设备发来的 reps</text>
+  <line x1="330" y1="398" x2="330" y2="412" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 收帧 -->
+  <rect x="170" y="416" width="320" height="62" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+  <text x="330" y="440" font-size="14" fill="#111827" text-anchor="middle">收到 0x01 姿态帧（50 Hz）</text>
+  <text x="330" y="462" font-size="14" fill="#111827" text-anchor="middle">流式解帧 + SUM / 帧尾校验，失败即丢弃</text>
+  <line x1="330" y1="478" x2="330" y2="492" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 入环 push -->
+  <rect x="170" y="496" width="320" height="62" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+  <text x="330" y="520" font-size="14" fill="#111827" text-anchor="middle">写入采样环（≤1000 点）</text>
+  <text x="330" y="542" font-size="14" fill="#111827" text-anchor="middle">repCounter.push(sample) 在线计数</text>
+  <line x1="330" y1="558" x2="330" y2="572" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 计次 -->
+  <polygon points="180,616 330,576 480,616 330,656" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.8"/>
+  <text x="330" y="621" font-size="13.5" fill="#312e81" text-anchor="middle">识别到 1 次重复？</text>
+  <text x="342" y="672" font-size="11.5" fill="#6b7280">是</text>
+  <line x1="330" y1="656" x2="330" y2="670" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 计次 否 回路 -->
+  <polyline points="180,616 136,616 136,458 166,458" fill="none" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#a3g)"/>
+  <text x="150" y="608" font-size="11.5" fill="#6b7280">否</text>
+
+  <!-- 切片 -->
+  <rect x="170" y="674" width="320" height="56" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+  <text x="330" y="698" font-size="14" fill="#111827" text-anchor="middle">切片 [startMs, endMs] 样本 → RepRecord</text>
+  <text x="330" y="719" font-size="13" fill="#4b5563" text-anchor="middle">本组最多保留 200 条</text>
+  <line x1="330" y1="730" x2="330" y2="744" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 达标 -->
+  <polygon points="180,788 330,748 480,788 330,828" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.8"/>
+  <text x="330" y="793" font-size="13.5" fill="#312e81" text-anchor="middle">次数 ≥ 目标次数？</text>
+  <text x="342" y="844" font-size="11.5" fill="#6b7280">是</text>
+  <line x1="330" y1="828" x2="330" y2="842" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 达标 否 回路 -->
+  <polyline points="180,788 96,788 96,438 166,438" fill="none" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#a3g)"/>
+  <text x="110" y="780" font-size="11.5" fill="#6b7280">否（继续收帧）</text>
+
+  <!-- 停止 -->
+  <rect x="170" y="846" width="320" height="56" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+  <text x="330" y="870" font-size="14" fill="#111827" text-anchor="middle">下发 0x83 停止采集</text>
+  <text x="330" y="891" font-size="13" fill="#4b5563" text-anchor="middle">手动结束 / 连接断开也走此路</text>
+  <line x1="330" y1="902" x2="330" y2="916" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 分析 -->
+  <rect x="170" y="920" width="320" height="62" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+  <text x="330" y="944" font-size="14" fill="#111827" text-anchor="middle">快照本组 → analyzeSet 逐次分析</text>
+  <text x="330" y="966" font-size="14" fill="#111827" text-anchor="middle">后端优先，失败自动回退本地规则</text>
+  <line x1="330" y1="982" x2="330" y2="996" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 保存报告 -->
+  <rect x="170" y="1000" width="320" height="62" rx="8" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.8"/>
+  <text x="330" y="1024" font-size="14" fill="#111827" text-anchor="middle">保存历史（localStorage）</text>
+  <text x="330" y="1046" font-size="14" fill="#111827" text-anchor="middle">渲染锻炼报告与多维评分</text>
+  <line x1="330" y1="1062" x2="330" y2="1076" stroke="#1d4ed8" stroke-width="1.8" marker-end="url(#a3)"/>
+
+  <!-- 结束 -->
+  <rect x="230" y="1080" width="200" height="40" rx="20" fill="#1d4ed8" stroke="#1d4ed8"/>
+  <text x="330" y="1106" font-size="14.5" font-weight="700" fill="#ffffff" text-anchor="middle">结束本组</text>
+
+  <!-- 右侧说明 -->
+  <rect x="560" y="86" width="316" height="76" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="6 4"/>
+  <text x="572" y="108" font-size="12" fill="#92400e" font-weight="700">工程处理</text>
+  <text x="572" y="128" font-size="11.5" fill="#78350f">· 安卓 GATT 连接偶发失败 → 自动重试 1 次</text>
+  <text x="572" y="147" font-size="11.5" fill="#78350f">· 失败时按步骤名定位：选择设备 / GATT / 服务 / 特征 / 通知</text>
+  <line x1="556" y1="124" x2="496" y2="124" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <rect x="560" y="576" width="316" height="86" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="6 4"/>
+  <text x="572" y="598" font-size="12" fill="#92400e" font-weight="700">每次计次的产出 RepEvent</text>
+  <text x="572" y="618" font-size="11.5" fill="#78350f">· 次序 / 起止时间 / 单次耗时</text>
+  <text x="572" y="637" font-size="11.5" fill="#78350f">· 行程角 rangeDeg / 峰值角速度 / 扭转比</text>
+  <text x="572" y="656" font-size="11.5" fill="#78350f">· 代偿标志：wristFlip / shortRange / momentum</text>
+  <line x1="556" y1="616" x2="496" y2="616" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <rect x="560" y="994" width="316" height="76" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="6 4"/>
+  <text x="572" y="1016" font-size="12" fill="#92400e" font-weight="700">报告内容</text>
+  <text x="572" y="1036" font-size="11.5" fill="#78350f">· 总分 + 活动范围 / 节奏 / 稳定性 / 一致性</text>
+  <text x="572" y="1055" font-size="11.5" fill="#78350f">· 五类错误码分布 + 信号质量提示 + 训练建议</text>
+</svg>

@@ -199,6 +199,18 @@ export interface RepCounterOptions {
    * 把边界改到「停顿」上之后，整个下放都落在同一次重复内。
    */
   pauseOmegaDps: number
+  /**
+   * 停顿判定：|竖直加速度| 上限（g）。**与 quietAccelG 分开**——
+   * quietAccelG 是速度泄漏用的（要严，否则积分被拉坏），
+   * 这里是停顿识别用的（要宽：重力方向估计有滞后，加上手抖与呼吸）。
+   */
+  pauseAccelG: number
+  /**
+   * 停顿判定：窗口内「安静样本」的比例下限。
+   * **不能要求严格连续**——按 400ms 连续校验时，只要中间有一个噪声样本
+   * quietRun 就归零、整次停顿识别失败（这正是现场"少计很多次"的成因）。
+   */
+  pauseQuietFrac: number
   /** 停顿必须持续多久才算「真停顿」（ms）。现场实测坐姿推举两端各停 0.4~0.6s，取 400。 */
   pauseMinMs: number
   /**
@@ -283,6 +295,8 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   minTravelM: 0.08,
   quietAccelG: 0.03,
   pauseOmegaDps: 30,
+  pauseAccelG: 0.03,
+  pauseQuietFrac: 0.8,
   pauseMinMs: 400,
   topPauseTravelRatio: 0.6,
   requirePause: true,
@@ -390,7 +404,11 @@ export class RepCounter {
   /** 迄今见过的最大位移绝对值：判断位移信号是否可用 */
   private maxAbsTravel = 0
   /** 连续处于"真停顿"的样本数 */
-  private quietRun = 0
+  /** 最近 pauseMinMs 内的安静标记（滑动窗口，用于停顿确认） */
+  private quietRing: number[] = []
+  private quietCap: number
+  /** 窗口内安静样本比例 */
+  private pauseQuiet = 0
   /** 本组是否观察到过持续停顿——只有观察到才启用停顿判据 */
   private pauseObserved = false
   /** 本次重复是否已经到过顶停顿（语法化边界：必须有顶才认一次） */
@@ -426,6 +444,8 @@ export class RepCounter {
   constructor(opt: Partial<RepCounterOptions> = {}) {
     this.opt = { ...DEFAULT_REP_OPTIONS, ...opt }
     this.omegaRingCap = Math.max(20, Math.round(this.opt.noiseWindowMs / 20))
+    // 停顿确认窗口 = pauseMinMs 对应的样本数（50Hz → 20ms/样本）
+    this.quietCap = Math.max(4, Math.round(this.opt.pauseMinMs / 20))
   }
 
   /** 各类拒因的累计次数 */
@@ -608,13 +628,15 @@ export class RepCounter {
     // 停顿检测：**每个样本都做**（不能只在武装期间）。
     // 早先放在武装分支里，导致动作之间的静止段无法建立 pauseObserved，
     // 而回落判据又在停顿建立之前就先触发了 → 自适应判据等于没生效（实测与改前完全一致）。
-    const quietNow = omegaMag < this.opt.pauseOmegaDps && Math.abs(aVert) < this.opt.quietAccelG
-    if (quietNow) {
-      this.quietRun += 1
-      if (this.quietRun * 20 >= this.opt.pauseMinMs) this.pauseObserved = true
-    } else {
-      this.quietRun = 0
-    }
+    const quietNow = omegaMag < this.opt.pauseOmegaDps && Math.abs(aVert) < this.opt.pauseAccelG
+    // 用**滑动窗口比例**而不是严格连续：按连续校验时，只要中间有一个噪声样本
+    // quietRun 就归零，整次停顿识别失败——这正是现场「少计很多次」的成因。
+    this.quietRing.push(quietNow ? 1 : 0)
+    if (this.quietRing.length > this.quietCap) this.quietRing.shift()
+    let quietSum = 0
+    for (const q of this.quietRing) quietSum += q
+    this.pauseQuiet = this.quietRing.length >= this.quietCap ? quietSum / this.quietRing.length : 0
+    if (this.pauseQuiet >= this.opt.pauseQuietFrac) this.pauseObserved = true
 
     // 计数标量：gravity 用姿态改变量，gyro 用角速度模长包络，accel 用竖直位移
     const metric =
@@ -709,15 +731,19 @@ export class RepCounter {
       this.opt.fallTravelRatio <= 0 ||
       this.repPeakTravel <= 0 ||
       travel <= this.opt.fallTravelRatio * this.repPeakTravel
-    // 只有真的观察到过持续停顿才启用下面这套语法判据；
-    // 否则退回原来的回落判据——否则"连贯不停顿"的动作会被卡死（合成连续组实测 12→1）。
+    // 只有真的观察到过**顶停顿**才启用语法判据。
+    // 为什么是"顶停顿"而不是"任何停顿"：只按"有停顿"启用时，
+    // 只要动作前有一段静止就会激活，而那些没有顶端停顿的动作（含离线录音）
+    // 会被语法拦住、于是一次都数不出来（实测 replay #27 由 1 变 0）。
+    // 现场确认坐姿推举顶端有 0.4~0.6s 停顿，所以一旦出现顶停顿就说明该启用语法。
+    const pauseConfirmed = this.pauseQuiet >= this.opt.pauseQuietFrac
     const needPause = this.opt.requirePause && this.pauseObserved
 
     if (needPause) {
       // ================= 语法化边界（现场确认：顶端/底端都有 0.4~0.6s 停顿）=================
       // 一次重复 = 底停顿 → 上举 → 顶停顿 → 下放 → **底停顿（在这里计数）**。
       // 停顿是离散事件，比"标量回落到 45%"这种连续量稳定得多。
-      const pauseConfirmed = this.quietRun * 20 >= this.opt.pauseMinMs
+      // 停顿确认：窗口内安静样本比例达标（允许个别噪声样本）。pauseConfirmed 已在上方算好。
       if (!pauseConfirmed) return null
 
       // 零速修正：停顿期间速度严格为 0，于是积分误差被逐次清零、不再累积

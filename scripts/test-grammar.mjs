@@ -132,6 +132,17 @@ for (const ms of [400, 500, 600]) {
   check(`两端各停 ${ms}ms × 12 次`, c.repCount === 12, `实际 ${c.repCount}`)
 }
 
+console.log('\n[2b] 停顿期间有手抖 / 呼吸扰动（现场真实情况）')
+{
+  // ±16°/s 的陀螺仪噪声：旧实现要求「连续 400ms 无噪声样本」，一个毛刺就把整次停顿作废，
+  // 这正是现场「少计很多次」的成因；改成滑动窗口比例（允许 20% 噪声样本）后应能数对。
+  const c = run(synthPress(12, { noise: 8 }))
+  check('陀螺仪噪声 ±16°/s × 12 次', c.repCount === 12, `实际 ${c.repCount}`)
+  // 极端噪声（±30°/s）会逼近 pauseOmegaDps=40 的判别边界，如实记录、不作为通过条件
+  const c2 = run(synthPress(12, { noise: 15 }))
+  console.log(`  ·  陀螺仪噪声 ±30°/s × 12 次（已知上限，仅记录）      实际 ${c2.repCount}`)
+}
+
 console.log('\n[3] 节律变化不能丢次数')
 const rhythm = [
   ['上举/下放各 0.5s（快）', { liftMs: 500, lowerMs: 500 }],

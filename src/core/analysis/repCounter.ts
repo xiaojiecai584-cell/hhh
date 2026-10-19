@@ -218,6 +218,11 @@ export interface RepCounterOptions {
    * 否则判为**底停顿**。取 0.6——顶点时位移接近峰值、底部接近 0，中间是下放途中。
    */
   topPauseTravelRatio: number
+  /**
+   * 判「两次停顿之间的位移」是否足够大以确定方向（米）。
+   * 小于它说明积分不可判方向，改用「与上一次停顿相反」的交替推定。
+   */
+  minSegmentTravelM: number
   /** 是否启用停顿判据（观察到持续停顿后才会真正生效，见 pauseObserved） */
   requirePause: boolean
   /** 静止时速度向 0 收敛的系数（在线零速修正，抑制积分漂移） */
@@ -299,6 +304,7 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   pauseQuietFrac: 0.8,
   pauseMinMs: 400,
   topPauseTravelRatio: 0.6,
+  minSegmentTravelM: 0.04,
   requirePause: true,
   zuptLeak: 0.85,
   travelRefTauMs: 2000,
@@ -411,6 +417,12 @@ export class RepCounter {
   private pauseQuiet = 0
   /** 本组是否观察到过持续停顿——只有观察到才启用停顿判据 */
   private pauseObserved = false
+  /** 上一次停顿时刻的位移（用于算两次停顿之间的 dx） */
+  private lastPauseX: number | null = null
+  /** 上一次停顿是在顶还是底（位移不可判方向时用来交替推定） */
+  private lastPauseAtBottom: boolean | null = null
+  /** 停顿的上升沿标记：一次停顿只处理一次 */
+  private pauseEdge = false
   /** 本次重复是否已经到过顶停顿（语法化边界：必须有顶才认一次） */
   private topPauseSeen = false
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
@@ -695,6 +707,10 @@ export class RepCounter {
         this.repTwistPath = 0
         this.repTotalPath = 0
         this.repAxes = { gx: [s.gx], gy: [s.gy], gz: [s.gz] }
+        // 位移锚点：武装（上举开始）时把 lastPauseX 定在这里。
+        // 若不设，第一次处理到的停顿会是**顶停顿**，而 lastPauseX 为 null 会默认判成"底"，
+        // 于是顶被丢掉、这一组永远等不到合规的底停顿 → 少一次（实测 12 次只数出 11）。
+        this.lastPauseX = this.xVert
       }
       return null
     }
@@ -744,12 +760,36 @@ export class RepCounter {
       // 一次重复 = 底停顿 → 上举 → 顶停顿 → 下放 → **底停顿（在这里计数）**。
       // 停顿是离散事件，比"标量回落到 45%"这种连续量稳定得多。
       // 停顿确认：窗口内安静样本比例达标（允许个别噪声样本）。pauseConfirmed 已在上方算好。
-      if (!pauseConfirmed) return null
+      // 只在停顿的**上升沿**处理一次。停顿会持续 400ms 以上（20+ 个样本），
+      // 若每个样本都跑一遍，dx 会被反复重算、顶/底标记被来回翻转，
+      // 结果每次停顿都被判成底 → 计数翻倍（实测 12 次数成 24）。
+      if (!pauseConfirmed) {
+        this.pauseEdge = false
+        return null
+      }
+      if (this.pauseEdge) return null
+      this.pauseEdge = true
 
       // 零速修正：停顿期间速度严格为 0，于是积分误差被逐次清零、不再累积
       this.vVert = 0
-      // 顶/底判别：位移高度。顶点时 travel 接近本次峰值，底部接近 0。
-      const isBottom = this.repPeakTravel <= 0 || travel < this.opt.topPauseTravelRatio * this.repPeakTravel
+      // ---- 顶/底判别 ----
+      // 早先用「abs 高度 travel < 0.6×本次峰值」，但 travel 是加速度二次积分得来的、
+      // 精度有限：当 repPeakTravel 很小时 0.6×小值≈0，条件几乎永不成立，
+      // 于是**每次停顿都被判成"顶"** → 永远等不到底停顿 → 一次也数不出来。
+      // 现场"刻意延长停顿也计不上数"正是这个后果（停顿识别成功，但判位错了）。
+      //
+      // 改成用**两次停顿之间的位移变化 dx**：停顿处速度严格为 0，
+      // 两个锚点之间的位移是良定义的，误差不累积。上举段 dx>0、下放段 dx<0。
+      const dx = this.lastPauseX === null ? 0 : this.xVert - this.lastPauseX
+      this.lastPauseX = this.xVert
+      const minSeg = this.opt.minSegmentTravelM
+      let isBottom: boolean
+      if (dx < -minSeg) isBottom = true // 刚下放完 → 现在是底
+      else if (dx > minSeg) isBottom = false // 刚上举完 → 现在是顶
+      else if (this.lastPauseAtBottom !== null) isBottom = !this.lastPauseAtBottom // 位移不可判 → 交替推定
+      else isBottom = true // 一组总是从底部开始
+      this.lastPauseAtBottom = isBottom
+
       if (!isBottom) {
         // 顶停顿：记下"到过顶"，但**不结束**这次重复——把整个下放留在同一次内，
         // 这正是"下放半程被算成第二次"（实测 7/124 条）的根治办法

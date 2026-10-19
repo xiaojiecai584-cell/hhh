@@ -120,24 +120,28 @@ const rels = []
 function runXml(text, { size, bold, color, font } = {}) {
   return tokenize(text)
     .map((tok) => {
-      const rPr = []
-      if (bold || tok.t === 'bold') rPr.push('<w:b/>')
-      if (size) rPr.push(`<w:sz w:val="${size}"/><w:szCs w:val="${size}"/>`)
-      if (color) rPr.push(`<w:color w:val="${color}"/>`)
-      if (tok.t === 'code') rPr.push('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/><w:color w:val="9A3412"/>')
-      else if (font) rPr.push(`<w:rFonts w:ascii="${font}" w:eastAsia="${font || '宋体'}" w:hAnsi="${font}"/>`)
-      const props = rPr.length ? `<w:rPr>${rPr.join('')}</w:rPr>` : ''
+      // rPr 子元素顺序：rFonts → b → color → sz/szCs（严格按 schema）
+      const head = []
+      const tail = []
+      if (bold || tok.t === 'bold') head.push('<w:b/>')
+      if (tok.t === 'code') head.push('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/>')
+      else if (font) head.push(`<w:rFonts w:ascii="${font}" w:eastAsia="${font}" w:hAnsi="${font}"/>`)
+      if (tok.t === 'code') tail.push('<w:color w:val="9A3412"/>')
+      else if (color) tail.push(`<w:color w:val="${color}"/>`)
+      if (size) tail.push(`<w:sz w:val="${size}"/><w:szCs w:val="${size}"/>`)
+      const props = head.length || tail.length ? `<w:rPr>${head.join('')}${tail.join('')}</w:rPr>` : ''
       return `<w:r>${props}<w:t xml:space="preserve">${esc(tok.v)}</w:t></w:r>`
     })
     .join('')
 }
 
 function p(text, opts = {}) {
-  const { style, indent = true, align, after = 40, before = 0, line = 340, size, color } = opts
+  const { style, indent = true, align, after = 40, before = 0, line = 340, size, color, indLeft, indHanging } = opts
   const pPr = []
   if (style) pPr.push(`<w:pStyle w:val="${style}"/>`)
   pPr.push(`<w:spacing w:before="${before}" w:after="${after}" w:line="${line}" w:lineRule="auto"/>`)
-  if (indent) pPr.push('<w:ind w:firstLine="420"/>')
+  if (indLeft || indHanging) pPr.push(`<w:ind w:left="${indLeft ?? 0}" w:hanging="${indHanging ?? 0}"/>`)
+  else if (indent) pPr.push('<w:ind w:firstLine="420"/>')
   if (align) pPr.push(`<w:jc w:val="${align}"/>`)
   return `<w:p><w:pPr>${pPr.join('')}</w:pPr>${runXml(text, { size, color })}</w:p>`
 }
@@ -164,17 +168,18 @@ function tableBlock(b) {
   const n = b.head.length
   const widths = (b.widths ?? Array(n).fill(100 / n)).map((w) => Math.round((TEXT_W * w) / 100))
   const border = (side) => `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>`
-  const tblPr = `<w:tblPr><w:tblW w:w="${TEXT_W}" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders>${['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(border).join('')}</w:tblBorders><w:tblCellMar><w:top w:w="60" w:type="dxa"/><w:left w:w="90" w:type="dxa"/><w:bottom w:w="60" w:type="dxa"/><w:right w:w="90" w:type="dxa"/></w:tblCellMar><w:tblLayout w:type="fixed"/></w:tblPr>`
+  const tblPr = `<w:tblPr><w:tblW w:w="${TEXT_W}" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders>${['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(border).join('')}</w:tblBorders><w:tblLayout w:type="fixed"/><w:tblCellMar><w:top w:w="60" w:type="dxa"/><w:left w:w="90" w:type="dxa"/><w:bottom w:w="60" w:type="dxa"/><w:right w:w="90" w:type="dxa"/></w:tblCellMar></w:tblPr>`
   const grid = `<w:tblGrid>${widths.map((w) => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>`
-  const cell = (text, w, { head } = {}) =>
-    `<w:tc><w:tcPr><w:tcW w:w="${w}" w:type="dxa"/>${head ? '<w:shd w:val="clear" w:color="auto" w:fill="EFF6FF"/>' : ''}<w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:spacing w:before="20" w:after="20" w:line="260" w:lineRule="auto"/>${head ? '<w:jc w:val="center"/>' : ''}</w:pPr>${runXml(text, { size: 19, bold: head })}</w:p></w:tc>`
+  const cell = (text, w, { head, keepNext } = {}) =>
+    `<w:tc><w:tcPr><w:tcW w:w="${w}" w:type="dxa"/>${head ? '<w:shd w:val="clear" w:color="auto" w:fill="EFF6FF"/>' : ''}<w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr>${keepNext ? '<w:keepNext/>' : ''}<w:spacing w:before="20" w:after="20" w:line="260" w:lineRule="auto"/>${head ? '<w:jc w:val="center"/>' : ''}</w:pPr>${runXml(text, { size: 19, bold: head })}</w:p></w:tc>`
   const rows = [
-    `<w:tr><w:trPr><w:tblHeader/><w:cantSplit/></w:trPr>${b.head.map((t, i) => cell(t, widths[i], { head: true })).join('')}</w:tr>`,
+    `<w:tr><w:trPr><w:cantSplit/><w:tblHeader/></w:trPr>${b.head.map((t, i) => cell(t, widths[i], { head: true, keepNext: true })).join('')}</w:tr>`,
     ...b.rows.map(
-      (r) => `<w:tr><w:trPr><w:cantSplit/></w:trPr>${r.map((t, i) => cell(t, widths[i])).join('')}</w:tr>`,
+      (r, ri) =>
+        `<w:tr><w:trPr><w:cantSplit/></w:trPr>${r.map((t, i) => cell(t, widths[i], { keepNext: ri < b.rows.length - 1 })).join('')}</w:tr>`,
     ),
   ]
-  const cap = `<w:p><w:pPr><w:spacing w:before="160" w:after="60" w:line="260" w:lineRule="auto"/><w:jc w:val="center"/></w:pPr>${runXml(b.caption, { size: 18, color: '4B5563' })}</w:p>`
+  const cap = `<w:p><w:pPr><w:keepNext/><w:spacing w:before="160" w:after="60" w:line="260" w:lineRule="auto"/><w:jc w:val="center"/></w:pPr>${runXml(b.caption, { size: 18, color: '4B5563' })}</w:p>`
   return cap + `<w:tbl>${tblPr}${grid}${rows.join('')}</w:tbl>` + '<w:p><w:pPr><w:spacing w:before="0" w:after="80" w:line="200" w:lineRule="auto"/></w:pPr></w:p>'
 }
 
@@ -191,10 +196,11 @@ for (const b of blocks) {
   else if (b.type === 'h2') bodyParts.push(heading(b.text, 2))
   else if (b.type === 'h3') bodyParts.push(heading(b.text, 3))
   else if (b.type === 'p') bodyParts.push(p(b.text))
-  else if (b.type === 'li') bodyParts.push(p('· ' + b.text, { indent: false }).replace('<w:pPr>', '<w:pPr><w:ind w:left="420" w:hanging="210"/>'))
+  else if (b.type === 'li') bodyParts.push(p('· ' + b.text, { indent: false, indLeft: 420, indHanging: 210 }))
   else if (b.type === 'note') bodyParts.push(p(b.text, { size: 18, color: '6B7280', indent: false }))
   else if (b.type === 'figure') bodyParts.push(figureBlock(b))
   else if (b.type === 'table') bodyParts.push(tableBlock(b))
+  else if (b.type === 'pagebreak') bodyParts.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
 }
 
 const sectPr = `<w:sectPr><w:footerReference w:type="default" r:id="rId2"/><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1418" w:right="1418" w:bottom="1418" w:left="1418" w:header="851" w:footer="851" w:gutter="0"/><w:cols w:space="425"/><w:docGrid w:type="lines" w:linePitch="312"/></w:sectPr>`
@@ -214,7 +220,7 @@ const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 const footerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="0"/></w:pPr>
+<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:jc w:val="center"/></w:pPr>
 <w:r><w:rPr><w:sz w:val="17"/><w:color w:val="6B7280"/></w:rPr><w:t xml:space="preserve">${esc(meta.footer)}　　</w:t></w:r>
 <w:r><w:rPr><w:sz w:val="17"/><w:color w:val="6B7280"/></w:rPr><w:t xml:space="preserve">第 </w:t></w:r>
 <w:r><w:rPr><w:sz w:val="17"/><w:color w:val="6B7280"/></w:rPr><w:fldChar w:fldCharType="begin"/></w:r>
@@ -299,6 +305,7 @@ const htmlBody = blocks
     if (b.type === 'note') return `<p class="note">${inlineHtml(b.text)}</p>`
     if (b.type === 'figure') return figHtml(b)
     if (b.type === 'table') return tableHtml(b)
+    if (b.type === 'pagebreak') return '<div style="page-break-after: always;"></div>'
     return ''
   })
   .join('\n')

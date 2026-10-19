@@ -1,0 +1,93 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>项目总结汇报（初稿） Lindoway 智能哑铃 · 上位机（Web 端）部分</title>
+<style>
+@page { size: A4; margin: 20mm 18mm; }
+body { font-family: "Microsoft YaHei","PingFang SC",serif; font-size: 10.5pt; line-height: 1.65; color:#1f2937; margin:0; background:#e5e7eb; }
+.page { width: 210mm; min-height: 297mm; padding: 20mm 18mm; box-sizing: border-box; margin: 0 auto; background:#fff; }
+h1 { font-family:"Microsoft YaHei"; font-size: 15.5pt; color:#1d4ed8; margin: 22px 0 10px; padding-bottom:4px; border-bottom:1px solid #dbeafe; page-break-after: avoid; }
+p { margin: 0 0 9px; text-indent: 2em; text-align: justify; }
+p.li { text-indent: -1.2em; padding-left: 1.2em; }
+p.note { font-size: 9pt; color:#6b7280; }
+strong { font-weight: 700; }
+code { font-family: Consolas, monospace; font-size: 9pt; color:#9a3412; background:#fff7ed; padding:0 2px; }
+figure { margin: 14px 0 16px; text-align:center; page-break-inside: avoid; }
+figure img { max-width: 100%; }
+figcaption { font-size: 9pt; color:#4b5563; margin-top:6px; }
+.tbl { margin: 14px 0 16px; page-break-inside: avoid; }
+.tcap { font-size: 9pt; color:#4b5563; text-align:center; margin-bottom:5px; }
+table { width:100%; border-collapse: collapse; font-size: 8.8pt; }
+th, td { border:1px solid #cbd5e1; padding: 5px 6px; vertical-align: middle; text-align:left; }
+th { background:#eff6ff; font-weight:700; text-align:center; }
+.title { text-align:center; margin-bottom: 6px; }
+.title h1.t { border:none; font-size: 20pt; margin:0 0 6px; }
+.sub { text-align:center; font-size: 12pt; font-weight:700; margin: 0 0 4px; }
+.meta { text-align:center; font-size: 9.5pt; color:#4b5563; margin:0 0 4px; }
+.rule { height:2px; background:#1d4ed8; margin: 10px 0 18px; }
+@media print { body{background:#fff} .page{margin:0;padding:0;width:auto;min-height:0} }
+</style></head><body><div class="page">
+<div class="sub">Lindoway 智能哑铃 · 上位机（Web 端）部分</div>
+<div class="title"><h1 class="t">项目总结汇报（初稿）</h1></div>
+<div class="meta">负责部分：纯前端上位机系统（Web Bluetooth 通信、在线计数算法、组分析与报告）</div>
+<div class="meta">2026 年第十六届"毕昇杯"全国大学生电子设计新技术应用创新竞赛　│　2026 年 10 月</div>
+<div class="rule"></div>
+<h1>一、本稿范围与资料来源</h1>
+<p>本稿只覆盖我负责的<strong>上位机</strong>部分，即仓库 <code>D:\lindoway</code> 中的纯前端 Web 应用：蓝牙通信与协议解析、在线计数与代偿判别、组内分析与锻炼报告生成。设备端的电路原理图、固件与结构件由其他成员负责，本稿只在接口层面引用，不展开。</p>
+<p>资料来自两部分：一是《Lindoway 项目设计简介》（申报材料，<code>lindoway.html</code>）；二是仓库现有源码，重点核对 <code>src/core/protocol/codec.ts</code>、<code>src/core/ble/*</code>、<code>src/core/analysis/*</code>、<code>src/store/useBleStore.ts</code> 与 <code>src/pages/*</code>。凡本文给出具体数值的地方，均可在对应源文件中查到出处；凡属推测或尚未实测的地方，一律标注&quot;待核&quot;。</p>
+<p>先给结论：上位机的功能闭环已经打通——连接、计数、出报告、存历史、数据采集五条链路都能跑通，且在没有真实硬件时可用内置虚拟设备完成全流程演示；<strong>当前缺口集中在真机联调数据与答辩素材</strong>，见第十节。</p>
+<h1>二、系统定位：三条链路的职责切分</h1>
+<p>这个项目容易被误解的地方是&quot;到底谁在算数&quot;。实际上系统被切成三条职责清晰的链路，上位机在其中只承担中间一段：</p>
+<p class="li">· <strong>设备端（边缘）</strong>：高频采样、姿态解算、动作是否变形的即时判别与就地报警。要求低延迟，因为警示必须在动作发生的那一刻给出。</p>
+<p class="li">· <strong>上位机（本稿）</strong>：把 50 Hz 的姿态流变成可用的训练事实——数清做了几次、每次质量如何、这一组该怎么评价，并把它变成一份看得懂的报告。</p>
+<p class="li">· <strong>分析后端（可选）</strong>：逐次动作的五类错误判定与评分、大模型训练建议。它是&quot;增强项&quot;而不是&quot;必需项&quot;，未配置时上位机必须能独立完成计数与报告。</p>
+<p>由此确定三条贯穿全稿的设计取舍，后面所有模块都是为它们服务的：</p>
+<p class="li">· <strong>启动权在设备端</strong>。用户在器械端用语音关键词或隐私倒计时开始，设备发 <code>0x02</code> 事件通知上位机；上位机不下发&quot;开始&quot;指令（<code>0x82</code> 仅保留在调试站）。这样训练者不需要腾出手来点手机，也避免了两端各自计时的不同步。</p>
+<p class="li">· <strong>原始波形不上行到云端，计数在本地完成</strong>。50 Hz × 7 通道的数据流如果实时回传，信道、功耗和丢包都不可控；上位机只把&quot;每一次重复&quot;的切片留作分析，其余靠本地状态机消化。</p>
+<p class="li">· <strong>分析可降级</strong>。后端不可达时自动回退到本地规则分析器，阈值与评分公式与后端逐项对齐，报告结构不变，只在结果上标注来源。</p>
+<div class="tbl"><div class="tcap">表 1　三方职责与接口边界</div><table><th>角色</th><th>输入</th><th>输出</th><th>本稿是否负责</th><tr><td>设备端 MCU</td><td>IMU 六轴原始量</td><td>0x01 姿态帧（50 Hz）、0x02 动作开始、0x80 ACK</td><td>否（只约定格式）</td></tr><tr><td>上位机</td><td>上述帧 + 用户操作</td><td>本组报告、历史记录、采集标注数据</td><td>是</td></tr><tr><td>分析后端</td><td>单次重复的样本序列</td><td>评分、错误码、信号质量、教练建议</td><td>否（只对接接口）</td></tr><tr><td>浏览器本地存储</td><td>上位机写入</td><td>历史成绩、身体数据、自定义动作、BLE 配置</td><td>是</td></tr></table></div>
+<h1>三、系统总体原理</h1>
+<p>如图 1，整个系统是&quot;设备端—上位机—服务端&quot;三段式。上位机对下通过 BLE GATT 与设备的 NUS 服务（<code>6e400001-…</code>）通信，读特征收帧、写特征发指令；对上通过 HTTPS/JSON 与可选的 FastAPI 后端通信；自身用 localStorage 承担历史与配置的持久化。</p>
+<p>选择 Web 技术栈有三个现实理由。第一，<strong>免安装</strong>：答辩现场用笔记本或安卓手机的浏览器打开即可，不需要安装包、不需要签名、不需要应用商店；第二，<strong>Web Bluetooth 是浏览器原生能力</strong>，直接操作 GATT，不需要额外的原生桥接层；第三，桌面与移动端共用一套代码，改一处两端同时生效。代价是浏览器限制——必须是 HTTPS 或 localhost，且目前以安卓 Chrome/Edge 支持最完整，这一点在答辩设备选择上要提前确认。</p>
+<figure><img src="figures/fig1-architecture.svg" width="900" alt="图 1　上位机系统总体原理图（设备端 — 上位机 — 分析服务）"><figcaption>图 1　上位机系统总体原理图（设备端 — 上位机 — 分析服务）</figcaption></figure>
+<h1>四、上位机软件架构</h1>
+<p>代码按依赖方向分成五层（图 2）：表现层（React 页面与 3D 视图）、状态层（Zustand store）、领域层（纯函数算法）、协议与传输层（帧编解码与 BLE 抽象）、边界（设备、后端、本地存储）。上层只能依赖下层，这意味着换硬件只改协议层，换算法只改领域层，UI 不需要跟着动。</p>
+<p>几个值得说明的决定：</p>
+<p class="li">· <strong>传输层做成接口</strong>（<code>BLETransport</code>），真机实现（<code>WebBluetoothTransport</code>）与虚拟设备实现（<code>VirtualDeviceTransport</code>）可互换。虚拟设备按同一套协议模拟 50 Hz 姿态流、ACK 与事件帧，因此在没有硬件、或现场蓝牙故障时，整套演示仍可完整走一遍——这是答辩的兜底方案，也是日常开发不必等硬件的原因。</p>
+<p class="li">· <strong>50 Hz 的帧不进 React state</strong>。姿态帧只更新 store 里的少量字段并驱动非 React 的计数逻辑，训练页本身不订阅高频数据，避免每 20 ms 触发一次整页重渲染。这是移动端流畅度的关键，也是把&quot;实时视图&quot;和&quot;用户界面&quot;拆成两套页面的原因。</p>
+<p class="li">· <strong>领域层是纯函数</strong>，不碰 DOM、不碰蓝牙、不碰网络。计数与判别因此可以用脚本离线跑历史数据做回归，不必接硬件、不必开浏览器。本稿中的算法参数就是靠这种方式调出来的。</p>
+<figure><img src="figures/fig2-layers.svg" width="900" alt="图 2　上位机软件分层架构（依赖只允许自上而下）"><figcaption>图 2　上位机软件分层架构（依赖只允许自上而下）</figcaption></figure>
+<h1>五、通信协议实现</h1>
+<p>帧格式是定长的：<code>AA | Type | Payload | SUM | 55</code>，多字节字段一律大端，<code>SUM</code> 为帧头到载荷末尾的累加和取低 8 位。定长 + 双端标记让解析器可以在字节流中随时重新同步，不依赖&quot;包边界&quot;，这对 BLE 通知分包尤其重要。</p>
+<p>解析器（<code>FrameParser</code>）按流式处理：在缓冲区里找帧头 <code>0xAA</code>，按类型查表得到载荷长度，长度不够就等下一批字节；未知类型只跳过 1 字节继续找头；校验和或帧尾不符则丢弃该候选帧。这样即使中途丢了整帧、或收到 WiFi 干扰造成的假帧头，也能在几帧之内自愈，不会把连接卡死。</p>
+<p>字段一律用<strong>定点整数</strong>而不是浮点：角度 i16 缩放 100（分辨率 0.01°，量程 ±327°），角速度 i16 缩放 10（0.1 °/s，量程 ±3276 °/s），加速度 i16 缩放 1000（0.001 g）。三点好处：载荷定长，解析不需要分隔符；跨语言跨平台逐位一致，不会出现前后端对同一帧解释不同；累加校验对整数天然稳定，也不会因 NaN 把校验带偏。</p>
+<p>固件版本不同时也不用改代码：服务与读写的 UUID 都放在网页端的配置项里（默认 NUS 三段），旧固件的 <code>0xFFE0/0xFFE1</code> 短 UUID 会被自动补全成 128 位标准格式再用于匹配。这一步看起来多余，实测却省掉了每次换模块都要重新编译前端的时间。</p>
+<div class="tbl"><div class="tcap">表 2　帧类型与主要字段</div><table><th>类型</th><th>方向</th><th>载荷</th><th>帧长</th><th>用途与字段</th><tr><td>0x01</td><td>设备→上位机</td><td>22 B</td><td>26 B</td><td>姿态帧，50 Hz。时间戳 u32；roll/pitch/yaw 为 i16×100；加速度 i16×1000（g）；角速度 i16×10（°/s）</td></tr><tr><td>0x02</td><td>设备→上位机</td><td>3 B</td><td>7 B</td><td>动作开始事件：actionId、启动方式（1 语音 / 2 倒计时）、本组目标次数</td></tr><tr><td>0x80</td><td>设备→上位机</td><td>1 B</td><td>5 B</td><td>ACK，回显动作编号</td></tr><tr><td>0x82</td><td>上位机→设备</td><td>19 B</td><td>23 B</td><td>标准动作目标姿态（调试用途，正式流程不再下发）</td></tr><tr><td>0x83</td><td>上位机→设备</td><td>0 B</td><td>4 B</td><td>停止采集；达标、手动结束、连接断开时下发</td></tr></table></div>
+<h1>六、主程序流程</h1>
+<figure><img src="figures/fig3-main-flow.svg" width="900" alt="图 3　上位机主程序流程图"><figcaption>图 3　上位机主程序流程图</figcaption></figure>
+<p>主流程见图 3，分三段：连接、采集、出报告。</p>
+<p><strong>连接段</strong>的工程处理比协议本身更费事。安卓上 <code>gatt.connect()</code> 偶发失败，因此实现里带一次 600 ms 后的自动重试；连接过程被拆成&quot;选择设备 / GATT / 查找服务 / 查找特征 / 启动通知&quot;几个具名步骤，失败时直接把卡在哪一步写进错误提示，并把设备实际提供的服务 UUID 列出来——否则现场只能看到一句&quot;连接失败&quot;，排查成本极高。</p>
+<p><strong>采集段</strong>每收到一帧姿态数据，先经协议层解帧校验，再写入长度上限 1000 点的采样环，同时喂给计数器。计次成功时，按该次重复的起止时间戳从采样环里切出对应样本，形成一条 <code>RepRecord</code>（本组最多保留 200 条）。当累计次数达到设备下发的目标次数时，自动下发 <code>0x83</code> 停止采集，并把&quot;是否正在录制&quot;一并收尾。</p>
+<p><strong>出报告段</strong>在结束本组时触发，不依赖用户去报告页手动点。这里有个容易漏掉的分支：如果用户在最后一次动作的回落途中就结束本组，那次动作还没走到&quot;计次&quot;就被截断——实现里在停止前先 <code>flush()</code> 结算半途中的一次，避免&quot;最后一次凭空消失&quot;。连接意外断开同样走这条路径，先把本组结算完再断开，不让这一组数据白丢。</p>
+<h1>七、计数与代偿判别算法</h1>
+<figure><img src="figures/fig4-algorithm.svg" width="900" alt="图 4　在线计数与代偿判别算法流程图"><figcaption>图 4　在线计数与代偿判别算法流程图</figcaption></figure>
+<p>这一节是上位机里真正有技术含量的部分。最初的做法是&quot;录完一段再切段数数&quot;（离线切段），实测把它当实时计数器用会出三个结构性问题：一是数字会跳变（整段重算导致已计次数回退）；二是系统性漏数（过近的两次动作被合并）；三是轻轻晃动也会加数（切段只有角速度一道门限，没有幅度判断）。因此计数器被重写为在线状态机，只依赖已经发生的样本，计数单调不回退。</p>
+<p><strong>计数标量</strong>。用互补滤波跟踪设备坐标系下的重力方向 ĝ（陀螺仪管短期、加速度计管长期），维护一个&quot;静止参考&quot; ĝ_ref，计数标量取二者夹角 d。实测单次侧平举 d 约 69~79°，而单轴陀螺仪积分只有 30~36°——直接积分会低估一半以上，主轴还会跳。参考方向只在明显静止时缓慢跟随，肢体一旦离开静止就冻结，否则慢速动作时参考会跟着一起走，姿态改变量永远长不起来。</p>
+<p><strong>边界判定</strong>。一次重复 = 从谷底升到峰值、再回落到峰谷差的一定比例以下；阈值全部相对本组实际幅度，所以连续做、不完整放回也能数，轻轻晃动则因为峰谷差永远到不了下限而一次都不计。更强的做法是利用&quot;停顿&quot;这一离散事件：现场确认坐姿推举在顶端和底端各有 0.4~0.6 s 停顿，于是把边界锚在停顿上——底停顿 → 上举 → 顶停顿 → 下放 → 底停顿，在第二个底停顿时计一次。停顿比&quot;回落到 45%&quot;这种连续量稳定得多，也顺手根治了&quot;下放半程被算成第二次&quot;。</p>
+<p><strong>第二判据</strong>。非标准动作常常幅度不达标、但波形形状仍与标准动作高度相似。计数器因此保留一条模板相关通道：把本次三轴波形归一化后与标准模板求相关系数，任一轴超过 0.6 也算一次。取三轴最大、并取绝对值，是为了容忍左右手佩戴造成的轴向相反。这样&quot;幅度门限没过但动作确实做了&quot;的样本不会被误杀。</p>
+<p><strong>自适应门限</strong>。不同人的静息抖动差别很大：手稳的人静息 5°/s，手抖的人能到 15°/s，而&quot;轻轻晃动&quot;和&quot;小幅度动作&quot;在绝对角速度上完全重叠（实测都在 28°/s 上下），一个全局常数不可能同时滤掉晃动和数出小动作。实现改为用最近 5 s 窗口的 20 分位估计静息水平，门限取其 3 倍并钳位在 30~80°/s——只允许上调、不允许下调，因为下调会让晃动被数成动作。</p>
+<div class="tbl"><div class="tcap">表 3　计数关键参数（取自 DEFAULT_REP_OPTIONS）</div><table><th>参数</th><th>取值</th><th>作用</th><tr><td>signal</td><td>gyro</td><td>计数标量用平滑角速度模长；gravity 适合整肢在垂直面翻转的动作</td></tr><tr><td>omegaTauMs</td><td>250 ms</td><td>角速度低通，抑制顶点处角速度回落被误判为一次结束</td></tr><tr><td>armOmegaDps</td><td>12 °/s</td><td>候选武装门限，用原始值而非平滑值，避免短促爆发被削掉</td></tr><tr><td>omegaGateFloor / Max</td><td>30 / 80 °/s</td><td>自适应门限的钳位区间，只允许上调应对手抖</td></tr><tr><td>fallFrac / fallHoldMs</td><td>0.45 / 260 ms</td><td>回落判据的深度与持续时间（未观察到停顿时生效）</td></tr><tr><td>fallTiltRatio / fallTravelRatio</td><td>0.45 / 0.45</td><td>回落时姿态与竖直位移也要真的下来，区分&quot;顶点停顿&quot;与&quot;底部休息&quot;</td></tr><tr><td>minRepMs / maxRepMs</td><td>700 / 15000 ms</td><td>单次时长合法区间，过短过长都丢弃</td></tr><tr><td>pauseMinMs</td><td>400 ms</td><td>连续静止多久算&quot;真停顿&quot;，停顿判据据此启用</td></tr><tr><td>twistRatioLimit</td><td>0.25</td><td>绕重力轴扭转占转动路径的比例，超过判为腕部翻转代偿</td></tr><tr><td>templateMinCorr</td><td>0.6</td><td>模板形状相关门限，作为幅度门限之外的第二判据</td></tr></table></div>
+<h1>八、组内分析与报告生成</h1>
+<p>一组结束后，上位机把这一组里每一次重复的样本切片逐条送去分析，再汇总成 <code>SetAnalysis</code>：可用次数、平均总分、四项子分（活动范围、节奏、稳定性、一致性）、五类错误码的计数与严重度、信号质量问题清单，以及是否存在高风险。</p>
+<div class="tbl"><div class="tcap">表 4　五类错误码与判定条件（与后端 rule_based.py 对齐）</div><table><th>错误码</th><th>含义</th><th>严重度</th><th>触发条件（摘要）</th><tr><td>INSUFFICIENT_RANGE</td><td>活动范围不足</td><td>中</td><td>主轴峰值角速度低于该动作的 min_peak（推举 38、侧平举 34 °/s）</td></tr><tr><td>TEMPO_TOO_FAST</td><td>动作过快</td><td>中</td><td>单次时长 &lt; 1000 ms</td></tr><tr><td>TEMPO_TOO_SLOW</td><td>动作过慢</td><td>低</td><td>单次时长 &gt; 5000 ms</td></tr><tr><td>UNSTABLE_MOTION</td><td>轨迹不稳</td><td>中</td><td>主轴相对正弦参考的残差标准差 &gt; 7.0</td></tr><tr><td>INCOMPLETE_REPETITION</td><td>未完整完成</td><td>高</td><td>时长 &lt; 1000 ms，或结束点角速度 &gt; min_peak × 0.35</td></tr></table></div>
+<p>评分口径与后端逐项一致：活动范围按峰值与门限的比值给分，节奏在 1000~5000 ms 区间满分、偏离越远扣得越多，稳定性按残差标准差线性扣分，一致性按命中的错误条数扣分，四项加权后再取总分。命中高风险错误（未完整完成）时，总分被强制压到 45 分以下，并通过前端的安全覆盖把建议锁定为&quot;降低负荷、建议停止&quot;——<strong>这一层在前端又兜了一遍</strong>，避免后端没配好时提示反而变宽松。</p>
+<p>后端可用时优先后端结果；不可用则回退本地规则分析，报告结构、字段、评分完全一致，只在结果里标注数据来源。信号质量不合格的那一次不产生任何动作错误（只计入&quot;不可用&quot;），提示用户重新佩戴后重采，而不是显示&quot;动作有问题&quot;——这条与后端的硬性约束一致。</p>
+<h1>九、通信与数据流时序</h1>
+<p>图 5 把一次完整训练的消息顺序摊开。有两点值得在汇报时强调：其一，第 ③ 步由设备端发起，上位机全程只等待与计数，这就是&quot;启动权在设备端&quot;的具体体现；其二，第 ⑧⑩ 步是可选路径，失败时静默降级，不影响本组的计数、评分与报告——上位机在无网络、无后端的环境下依然是完整可用的。</p>
+<figure><img src="figures/fig5-sequence.svg" width="774" alt="图 5　一次训练的通信与数据流时序"><figcaption>图 5　一次训练的通信与数据流时序</figcaption></figure>
+<h1>十、完成度、实测与待办</h1>
+<p><strong>已完成</strong>：连接与协议解析（含虚拟设备）、在线计数状态机（含模板相关与自适应门限）、组内分析与本地规则回退、报告页与数据中心、数据采集与人工标注上传、动作库与自定义动作、3D 等比例动作演示。</p>
+<p><strong>已有实测数据</strong>（来自本地诊断脚本对历史样本的回放，非答辩现场数据）：单次识别率经参数调整后由坐姿推举 26.6% 提升到 67.3%、站姿侧平举 70.8% 提升到 86.2%；晃动样本的误计在启用自适应门限后由 9 次降到 0。这些数字需要在真机上复核后才能写进正式稿，本稿暂作过程记录。</p>
+<div class="tbl"><div class="tcap">表 5　待办清单（按对答辩的影响排序）</div><table><th>事项</th><th>归属</th><th>完成标准</th><tr><td>统一硬件口径：申报材料写 MSPM0G3507，代码注释写 ESP32-S3</td><td>全组</td><td>确定最终主控与无线方案，图 1 对应改一处</td></tr><tr><td>真机 50 Hz 联调：丢包率、时间戳抖动、连续组计数准确率</td><td>上位机 + 固件</td><td>连续 3 组 × 10 次，计数误差 0，报告无缺项</td></tr><tr><td>计数参数按真机数据再标定一轮</td><td>上位机</td><td>两类动作单次识别率均 ≥ 90%（现场样本）</td></tr><tr><td>报告页导出（PDF/图片）与分享</td><td>上位机</td><td>一键导出，含图与错误明细</td></tr><tr><td>答辩演示脚本：虚拟设备兜底流程、断连演示、后端降级演示</td><td>上位机</td><td>断网状态下 3 分钟内完整演示一遍</td></tr><tr><td>界面截图与录屏（申报材料&quot;演示视频&quot;要求）</td><td>全组</td><td>按提交要求的分辨率与时长</td></tr><tr><td>采集数据的隐私与授权说明</td><td>全组</td><td>在采集页与申报材料中给出说明</td></tr></table></div>
+<h1>十一、小结</h1>
+<p>上位机这一部分做的事情可以概括成三句：把不可靠的无线数据流变成可靠的计数事实（端侧状态机 + 双判据 + 自适应门限）；把一次训练变成一份能看懂的报告（逐次分析 + 组内汇总 + 后端可降级）；把整条链路做成可演示、可离线、可回退的形态（虚拟设备 + 本地存储 + 后端可选）。</p>
+<p>本稿是初稿，第五节至第七节的技术细节建议在组内评审时重点核对一次，尤其是表 3 的参数取值与表 5 的第一条硬件口径——这两处一旦定稿，图 1 与正文表述都要跟着同步。</p>
+<p class="note">附：本稿所有插图均为矢量源文件（<code>report/figures/*.svg</code>），同名 PNG 为 2 倍分辨率导出，可直接插入其他文档或替换配色。</p>
+</div></body></html>

@@ -199,8 +199,13 @@ export interface RepCounterOptions {
    * 把边界改到「停顿」上之后，整个下放都落在同一次重复内。
    */
   pauseOmegaDps: number
-  /** 停顿必须持续多久才算「真停顿」（ms） */
+  /** 停顿必须持续多久才算「真停顿」（ms）。现场实测坐姿推举两端各停 0.4~0.6s，取 400。 */
   pauseMinMs: number
+  /**
+   * 顶/底判别的位移比例：停顿处 `travel ≥ 该比例 × 本次位移峰值` 判为**顶停顿**，
+   * 否则判为**底停顿**。取 0.6——顶点时位移接近峰值、底部接近 0，中间是下放途中。
+   */
+  topPauseTravelRatio: number
   /** 是否启用停顿判据（观察到持续停顿后才会真正生效，见 pauseObserved） */
   requirePause: boolean
   /** 静止时速度向 0 收敛的系数（在线零速修正，抑制积分漂移） */
@@ -278,7 +283,8 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   minTravelM: 0.08,
   quietAccelG: 0.03,
   pauseOmegaDps: 30,
-  pauseMinMs: 260,
+  pauseMinMs: 400,
+  topPauseTravelRatio: 0.6,
   requirePause: true,
   zuptLeak: 0.85,
   travelRefTauMs: 2000,
@@ -387,6 +393,8 @@ export class RepCounter {
   private quietRun = 0
   /** 本组是否观察到过持续停顿——只有观察到才启用停顿判据 */
   private pauseObserved = false
+  /** 本次重复是否已经到过顶停顿（语法化边界：必须有顶才认一次） */
+  private topPauseSeen = false
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
   private lastPath: number | null = null
   private lastDisplacement = 0
@@ -690,31 +698,63 @@ export class RepCounter {
 
     const fallBelow = this.repValley + this.opt.fallFrac * (this.repPeak - this.repValley)
     // 姿态也要回到低位：顶点停顿与底部休息在 |ω| 上看起来一样，
-    // 但顶点时 d 处于本次峰值附近，底部时 d 很小
-    // 姿态回落判据：gyro/gravity 信号下用于区分「顶点停顿」与「底部休息」。
+    // 但顶点时 d 处于本次峰值附近、底部时 d 很小
     const tiltOk =
       this.opt.signal === 'accel' ||
       this.repPeakD < this.opt.fallTiltMinDeg ||
       d <= this.opt.fallTiltRatio * this.repPeakD
     // 位移回落判据：给 gyro 信号补上的第二道。传感器装在哑铃上时推举几乎不旋转，
-    // 上面那条 d 判据会因 repPeakD < fallTiltMinDeg 而跳过，于是顶点停顿被当成一次结束
-    // （实测 9/124 条一次被切成两次）。位移是位置量，顶点时在最高处、回落要求回到起点附近。
+    // 上面那条 d 判据会因 repPeakD < fallTiltMinDeg 而跳过。
     const travelOk =
       this.opt.fallTravelRatio <= 0 ||
       this.repPeakTravel <= 0 ||
       travel <= this.opt.fallTravelRatio * this.repPeakTravel
-    // 必须是**真正的静止停顿**（现场确认：坐姿推举在最高点与最低点都有明显停顿）。
-    // 只要求"标量回落"会让边界落在下放途中，剩余的下放又被算成一次。
-    //
-    // 但**不能无条件启用**：如果这套动作本身不停顿（连贯做），要求停顿会把计数卡死
-    // （合成连续组实测 12→1）。所以做成自适应——只有真的观察到过持续停顿才启用；
-    // 否则退回原来的回落判据，行为不变。
+    // 只有真的观察到过持续停顿才启用下面这套语法判据；
+    // 否则退回原来的回落判据——否则"连贯不停顿"的动作会被卡死（合成连续组实测 12→1）。
     const needPause = this.opt.requirePause && this.pauseObserved
-    if (metric > fallBelow || !tiltOk || !travelOk || (needPause && !quietNow)) {
+
+    if (needPause) {
+      // ================= 语法化边界（现场确认：顶端/底端都有 0.4~0.6s 停顿）=================
+      // 一次重复 = 底停顿 → 上举 → 顶停顿 → 下放 → **底停顿（在这里计数）**。
+      // 停顿是离散事件，比"标量回落到 45%"这种连续量稳定得多。
+      const pauseConfirmed = this.quietRun * 20 >= this.opt.pauseMinMs
+      if (!pauseConfirmed) return null
+
+      // 零速修正：停顿期间速度严格为 0，于是积分误差被逐次清零、不再累积
+      this.vVert = 0
+      // 顶/底判别：位移高度。顶点时 travel 接近本次峰值，底部接近 0。
+      const isBottom = this.repPeakTravel <= 0 || travel < this.opt.topPauseTravelRatio * this.repPeakTravel
+      if (!isBottom) {
+        // 顶停顿：记下"到过顶"，但**不结束**这次重复——把整个下放留在同一次内，
+        // 这正是"下放半程被算成第二次"（实测 7/124 条）的根治办法
+        this.topPauseSeen = true
+        this.fallStartT = 0
+        return null
+      }
+
+      // 底停顿：锚定底部高度（位移零点逐次校准）
+      this.xRef = this.xVert
+      this.travelValley = 0
+      if (!this.topPauseSeen) {
+        // 没到过顶 → 不是完整的一次（半程动作）
+        return null
+      }
+      this.armed = false
+      this.topPauseSeen = false
+      this.fallStartT = 0
+      const startMs = this.valleyT
+      const durationMs = s.t - startMs
+      const excursion = this.repPeak - this.repValley
+      this.valley = metric
+      this.valleyT = s.t
+      return this.accept(excursion, durationMs, startMs, s.t, false)
+    }
+
+    // ================= 未启用语法：原来的回落判据 =================
+    if (metric > fallBelow || !tiltOk || !travelOk) {
       this.fallStartT = 0 // 又抬起来了：重新计时
       return null
     }
-    // 回落必须持续一段时间，排除顶点的短暂停顿
     if (this.fallStartT === 0) {
       this.fallStartT = s.t
       return null
@@ -739,7 +779,16 @@ export class RepCounter {
    */
   flush(endMs: number): RepEvent | null {
     if (!this.armed) return null
+    // 语法模式：没到过顶停顿就不是一次完整重复（例如记录截止在上举途中）。
+    // 到过顶、截止在下放途中 → 仍应算一次（现场"做到最后一次按结束"就是这个情形）。
+    const grammar = this.opt.requirePause && this.pauseObserved
+    if (grammar && !this.topPauseSeen) {
+      this.armed = false
+      this.topPauseSeen = false
+      return null
+    }
     this.armed = false
+    this.topPauseSeen = false
     const startMs = this.valleyT
     const excursion = this.repPeak - this.repValley
     const durationMs = endMs - startMs

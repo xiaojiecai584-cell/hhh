@@ -55,7 +55,11 @@ function synth({ reps, repMs = 1600, restMs = 600, peakOmega = 80, floorOmega = 
 }
 
 function count(samples, opts = {}) {
-  const c = new RepCounter(opts)
+  // 本用例验证**回退路径**：合成信号没有真正的顶端停顿、也没有竖直平移。
+  // 停顿语法（底停顿→顶停顿→底停顿）由 scripts/test-grammar.mjs 单独覆盖，
+  // 那套信号才符合现场的哑铃物理。这里显式关掉语法，确保「连贯不停顿」的动作
+  // 仍然能正常计数——不能因为新语法把旧场景弄回归。
+  const c = new RepCounter({ requirePause: false, ...opts })
   for (const s of samples) c.push(s)
   return { n: c.repCount, c }
 }
@@ -92,7 +96,7 @@ console.log('\n=== 末尾立刻停止（最后一次在回落途中截断）==='
 {
   const full = synth({ reps: 12, trailingRestMs: 1200 })
   const cut = full.slice(0, full.length - Math.round(1200 / 20) - Math.round(300 / 20))
-  const c = new RepCounter()
+  const c = new RepCounter({ requirePause: false })
   for (const s of cut) c.push(s)
   const tail = c.flush(cut[cut.length - 1].t)
   const n = c.repCount

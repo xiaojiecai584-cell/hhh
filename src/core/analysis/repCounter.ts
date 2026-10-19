@@ -223,6 +223,8 @@ export interface RepCounterOptions {
    * 小于它说明积分不可判方向，改用「与上一次停顿相反」的交替推定。
    */
   minSegmentTravelM: number
+  /** 位移方向可作强证据的门槛（米）：远高于积分噪声，避免被噪声带偏判位 */
+  strongSegmentTravelM: number
   /** 是否启用停顿判据（观察到持续停顿后才会真正生效，见 pauseObserved） */
   requirePause: boolean
   /** 静止时速度向 0 收敛的系数（在线零速修正，抑制积分漂移） */
@@ -305,6 +307,7 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   pauseMinMs: 400,
   topPauseTravelRatio: 0.6,
   minSegmentTravelM: 0.04,
+  strongSegmentTravelM: 0.25,
   requirePause: true,
   zuptLeak: 0.85,
   travelRefTauMs: 2000,
@@ -419,10 +422,12 @@ export class RepCounter {
   private pauseObserved = false
   /** 上一次停顿时刻的位移（用于算两次停顿之间的 dx） */
   private lastPauseX: number | null = null
-  /** 上一次停顿是在顶还是底（位移不可判方向时用来交替推定） */
-  private lastPauseAtBottom: boolean | null = null
+  /** 上一次停顿是在顶还是底（诊断用） */
+  lastPauseAtBottom: boolean | null = null
   /** 停顿的上升沿标记：一次停顿只处理一次 */
   private pauseEdge = false
+  /** 本次重复内的停顿序号（1 = 顶，2 = 底），武装时清零 */
+  private pauseIndexInRep = 0
   /** 本次重复是否已经到过顶停顿（语法化边界：必须有顶才认一次） */
   private topPauseSeen = false
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
@@ -711,6 +716,8 @@ export class RepCounter {
         // 若不设，第一次处理到的停顿会是**顶停顿**，而 lastPauseX 为 null 会默认判成"底"，
         // 于是顶被丢掉、这一组永远等不到合规的底停顿 → 少一次（实测 12 次只数出 11）。
         this.lastPauseX = this.xVert
+        // 武装发生在上举开始时 → 本次重复的第 1 次停顿必为顶停顿（交替判位用）
+        this.pauseIndexInRep = 0
       }
       return null
     }
@@ -778,16 +785,21 @@ export class RepCounter {
       // 于是**每次停顿都被判成"顶"** → 永远等不到底停顿 → 一次也数不出来。
       // 现场"刻意延长停顿也计不上数"正是这个后果（停顿识别成功，但判位错了）。
       //
-      // 改成用**两次停顿之间的位移变化 dx**：停顿处速度严格为 0，
-      // 两个锚点之间的位移是良定义的，误差不累积。上举段 dx>0、下放段 dx<0。
+      // 改成用**停顿序号交替**判位，位移只作强证据时的校正。
+      //
+      // 为什么不再以位移为主：dx 来自加速度二次积分，实测并不准——
+      // 2 秒的重复里 0.01g 的零偏就能造成约 0.2 米误差，与 0.35 米的真实行程同量级，
+      // 而判位门槛只有 4 厘米，于是 dx 的正负号基本随机 → 约一半停顿判错位置 → 少计一半。
+      //
+      // 停顿本身是严格交替的（底→顶→底→顶），且武装只发生在上举开始时，
+      // 所以**武装后的第 1 次停顿必为顶，第 2 次必为底**。这个结构不需要任何积分。
+      this.pauseIndexInRep += 1
       const dx = this.lastPauseX === null ? 0 : this.xVert - this.lastPauseX
       this.lastPauseX = this.xVert
-      const minSeg = this.opt.minSegmentTravelM
-      let isBottom: boolean
-      if (dx < -minSeg) isBottom = true // 刚下放完 → 现在是底
-      else if (dx > minSeg) isBottom = false // 刚上举完 → 现在是顶
-      else if (this.lastPauseAtBottom !== null) isBottom = !this.lastPauseAtBottom // 位移不可判 → 交替推定
-      else isBottom = true // 一组总是从底部开始
+      let isBottom = this.pauseIndexInRep % 2 === 0
+      // 位移方向非常明确时以它为准（门槛远高于积分噪声，避免被噪声带偏）
+      if (dx < -this.opt.strongSegmentTravelM) isBottom = true
+      else if (dx > this.opt.strongSegmentTravelM) isBottom = false
       this.lastPauseAtBottom = isBottom
 
       if (!isBottom) {

@@ -23,7 +23,7 @@ import {
 import { useSubjectStore } from './useSubjectStore'
 import { segmentMotion, describeSegment, type SegmentRange } from '../core/analysis/segmentation'
 import { RepCounter, type RepEvent } from '../core/analysis/repCounter'
-import { shapeTemplateFor } from '../core/analysis/motionTemplates'
+import { repOptionsFor } from '../core/analysis/repOptions'
 import { analyzeSet, type SetAnalysis } from '../core/analysis/setAnalysis'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
 import { useApiConfigStore } from './useApiConfigStore'
@@ -344,13 +344,9 @@ export const useBleStore = create<BleState>((set) => ({
   beginSetFromDevice: (ev) => {
     const actionId = ev.actionId || 1
     // 开始新一组：换一个全新的计数器（在线计数，不重算历史）
-    // 带上该动作的**形状模板**：非标准动作常常幅度不达标但形状仍对，
-    // 归一化相关过线就认这一次（见 motionTemplates.ts）
-    const tpl = shapeTemplateFor(actionId)
-    repCounter = new RepCounter({
-      template: tpl?.mean,
-      templateAxis: tpl?.axis,
-    })
+    // 参数按动作分开：坐姿推举启用停顿语法，站姿侧平举走角速度/姿态回落路径
+    // （两个动作的信号特性根本不同，依据见 core/analysis/repOptions.ts）
+    repCounter = new RepCounter(repOptionsFor(actionId))
     countActive = true
     lastSampleT = 0
     sampleRing = []
@@ -387,11 +383,7 @@ export const useBleStore = create<BleState>((set) => ({
     const bytes = encodeStartAction(target)
     try {
       await active.send(bytes)
-      const tpl = shapeTemplateFor(target.actionId)
-      repCounter = new RepCounter({
-        template: tpl?.mean,
-        templateAxis: tpl?.axis,
-      })
+      repCounter = new RepCounter(repOptionsFor(target.actionId))
       countActive = true
       lastSampleT = 0
       sampleRing = []

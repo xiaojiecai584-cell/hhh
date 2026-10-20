@@ -313,7 +313,13 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   topPauseTravelRatio: 0.6,
   minSegmentTravelM: 0.04,
   strongSegmentTravelM: 0.25,
-  requirePause: true,
+  /**
+   * 是否启用停顿语法（每个明显停顿记 0.5 次）。**默认关闭**——
+   * 只有明确需要它的动作才开启，由 repOptions.ts 的 repOptionsFor 按动作给出
+   * （目前只有坐姿推举）。默认开启会让任何直接 `new RepCounter()` 的场景
+   * 都套上停顿语法，侧平举这类不靠停顿判边界的动作会被误伤（实测 4 条数成 0）。
+   */
+  requirePause: false,
   halfCycleMinMs: 350,
   zuptLeak: 0.85,
   travelRefTauMs: 2000,

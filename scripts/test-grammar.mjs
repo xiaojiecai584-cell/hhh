@@ -17,6 +17,7 @@ const server = await createServer({
 })
 const { RepCounter } = await server.ssrLoadModule('/src/core/analysis/repCounter.ts')
 const { shapeTemplateFor } = await server.ssrLoadModule('/src/core/analysis/motionTemplates.ts')
+const { repOptionsFor } = await server.ssrLoadModule('/src/core/analysis/repOptions.ts')
 
 const DT = 20 // ms，50Hz
 const G = 9.80665
@@ -104,8 +105,9 @@ function synthShake(ms = 20000, peak = 25) {
 }
 
 function run(samples, extra = {}) {
-  const tpl = shapeTemplateFor(1)
-  const c = new RepCounter({ signal: 'gyro', template: tpl?.mean, templateAxis: tpl?.axis, ...extra })
+  // 直接用生产的按动作配置（repOptionsFor(1) = 坐姿推举的停顿语法），
+  // 保证测试跑的就是线上那套参数，而不是另写一份。
+  const c = new RepCounter({ ...repOptionsFor(1), ...extra })
   for (const s of samples) c.push(s)
   c.flush(samples[samples.length - 1].t)
   return c

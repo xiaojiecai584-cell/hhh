@@ -22,10 +22,23 @@ export function repOptionsFor(actionId: number): Partial<RepCounterOptions> {
   }
   switch (actionId) {
     case 1:
-      // 坐姿推举：启用停顿语法（顶端/底端各有明显停顿）
-      // 停顿的判定参数统一放在 repCounter.ts 的 DEFAULT_REP_OPTIONS 里，
-      // 这里不再重复配置，避免两处不一致。
-      return { ...base, requirePause: true }
+      // 坐姿推举：启用停顿语法（顶端/底端各有明显停顿）。
+      // 这里的参数是**按现场反馈放宽过**的一套，只作用于本动作，
+      // 不影响其它动作（DEFAULT_REP_OPTIONS 里 requirePause 默认关闭）。
+      //   |ω| < 45°/s：停顿期间的腕部微调常达 30~40°/s
+      //   |a_vert| < 0.08g：重力方向估计有滞后，0.03g 过严；
+      //                     再往上放（0.12g）会把慢速动作误判成静止（实测 12 次数成 15）
+      //   窗口 300ms：现场停顿 0.4~0.6s，400ms 窗口几乎零余量
+      //   安静比例 0.7：允许 30% 样本有扰动
+      return {
+        ...base,
+        requirePause: true,
+        pauseOmegaDps: 45,
+        pauseAccelG: 0.08,
+        pauseQuietFrac: 0.7,
+        pauseMinMs: 300,
+        halfCycleMinMs: 350,
+      }
     case 2:
       // 站姿侧平举：姿态/角速度判据已足够，不套用停顿语法
       return { ...base, requirePause: false }

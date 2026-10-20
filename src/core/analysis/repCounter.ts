@@ -227,6 +227,11 @@ export interface RepCounterOptions {
   strongSegmentTravelM: number
   /** 是否启用停顿判据（观察到持续停顿后才会真正生效，见 pauseObserved） */
   requirePause: boolean
+  /**
+   * 两次停顿之间的最短间隔（ms）。低于它多半是原地反复停，不是一次半循环。
+   * 一次半循环（上举或下放）通常 0.5~2s。
+   */
+  halfCycleMinMs: number
   /** 静止时速度向 0 收敛的系数（在线零速修正，抑制积分漂移） */
   zuptLeak: number
   /** 位移静息参考的跟随时间常数（ms） */
@@ -309,6 +314,7 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   minSegmentTravelM: 0.04,
   strongSegmentTravelM: 0.25,
   requirePause: true,
+  halfCycleMinMs: 350,
   zuptLeak: 0.85,
   travelRefTauMs: 2000,
   /**
@@ -421,17 +427,23 @@ export class RepCounter {
   /** 本组是否观察到过持续停顿——只有观察到才启用停顿判据 */
   private pauseObserved = false
   /** 上一次停顿时刻的位移（用于算两次停顿之间的 dx） */
-  private lastPauseX: number | null = null
   /** 上一次停顿是在顶还是底（诊断用） */
   lastPauseAtBottom: boolean | null = null
   /** 停顿的上升沿标记：一次停顿只处理一次 */
   private pauseEdge = false
   /** 本次重复内的停顿序号（1 = 顶，2 = 底），武装时清零 */
-  private pauseIndexInRep = 0
   /** 当前这段安静是从何时开始的（0 = 现在不安静） */
   private pauseStartT = 0
   /** 本次重复的武装时刻 */
+  /** 本次重复的武装时刻 */
   private armT = 0
+  /** 已累计的「半次重复」个数（每个明显停顿 = 1 个半次） */
+  private halves = 0
+  /** 本组是否已用第一次停顿确立起点 */
+  /** 最近若干次停顿的时刻（用于取重复起点） */
+  private pauseTs: number[] = []
+  /** 上一次停顿之后见过的最大角速度（判断两次停顿之间是否真的动过） */
+  private pauseMaxOmega = 0
   /** 本次重复是否已经到过顶停顿（语法化边界：必须有顶才认一次） */
   private topPauseSeen = false
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
@@ -650,6 +662,8 @@ export class RepCounter {
     // 早先放在武装分支里，导致动作之间的静止段无法建立 pauseObserved，
     // 而回落判据又在停顿建立之前就先触发了 → 自适应判据等于没生效（实测与改前完全一致）。
     const quietNow = omegaMag < this.opt.pauseOmegaDps && Math.abs(aVert) < this.opt.pauseAccelG
+    // 记录"上一次停顿之后的最大角速度"，用来判断两次停顿之间是否真的动过
+    if (!quietNow && omegaMag > this.pauseMaxOmega) this.pauseMaxOmega = omegaMag
     // 用**滑动窗口比例**而不是严格连续：按连续校验时，只要中间有一个噪声样本
     // quietRun 就归零，整次停顿识别失败——这正是现场「少计很多次」的成因。
     this.quietRing.push(quietNow ? 1 : 0)
@@ -722,12 +736,6 @@ export class RepCounter {
         this.repTwistPath = 0
         this.repTotalPath = 0
         this.repAxes = { gx: [s.gx], gy: [s.gy], gz: [s.gz] }
-        // 位移锚点：武装（上举开始）时把 lastPauseX 定在这里。
-        // 若不设，第一次处理到的停顿会是**顶停顿**，而 lastPauseX 为 null 会默认判成"底"，
-        // 于是顶被丢掉、这一组永远等不到合规的底停顿 → 少一次（实测 12 次只数出 11）。
-        this.lastPauseX = this.xVert
-        // 武装发生在上举开始时 → 本次重复的第 1 次停顿必为顶停顿（交替判位用）
-        this.pauseIndexInRep = 0
         this.armT = s.t
       }
       return null
@@ -774,74 +782,53 @@ export class RepCounter {
     const needPause = this.opt.requirePause && this.pauseObserved
 
     if (needPause) {
-      // ================= 语法化边界（现场确认：顶端/底端都有 0.4~0.6s 停顿）=================
-      // 一次重复 = 底停顿 → 上举 → 顶停顿 → 下放 → **底停顿（在这里计数）**。
-      // 停顿是离散事件，比"标量回落到 45%"这种连续量稳定得多。
-      // 停顿确认：窗口内安静样本比例达标（允许个别噪声样本）。pauseConfirmed 已在上方算好。
-      // 只在停顿的**上升沿**处理一次。停顿会持续 400ms 以上（20+ 个样本），
-      // 若每个样本都跑一遍，dx 会被反复重算、顶/底标记被来回翻转，
-      // 结果每次停顿都被判成底 → 计数翻倍（实测 12 次数成 24）。
+      // ================= 停顿半计数（每个明显停顿记 0.5 次）=================
+      // 一次重复必然有 **2 个停顿**（顶端一个、底端一个），所以每个停顿记 0.5，
+      // 两个就是 1 次。这样**完全不需要判顶还是底**——而那正是之前所有 bug 的来源
+      // （相位错位导致在顶端计数、加速度二次积分不可靠导致判位随机、
+      //   单次动作被算成两次、延长停顿也不计……）。
+      //
+      // 代价：若漏识别一个停顿，这一次就少 0.5（显示为少一次）；
+      // 若多识别一个，就多 0.5。但不再有"系统性错位"这种会整体错一半的失效模式。
       if (!pauseConfirmed) {
         this.pauseEdge = false
         return null
       }
-      if (this.pauseEdge) return null
+      if (this.pauseEdge) return null // 一次停顿只处理一次（上升沿）
       this.pauseEdge = true
-      // **只处理「本次重复开始之后才开始」的停顿**。
-      // 否则：若在底部停着时就武装了（|ω| ≥ 12°/s，手微微一调就够），
-      // 那个底部停顿会被当成"第 1 次停顿"→ 奇数 → 判定为顶，
-      // 整条链错一位，真正的顶被当成底 → **在顶端计数**。
-      // 这正是现场"在最高点计数比较普遍"的成因（不是网站延迟）。
-      if (this.pauseStartT === 0 || this.pauseStartT <= this.armT) return null
 
-      // 零速修正：停顿期间速度严格为 0，于是积分误差被逐次清零、不再累积
-      this.vVert = 0
-      // ---- 顶/底判别 ----
-      // 早先用「abs 高度 travel < 0.6×本次峰值」，但 travel 是加速度二次积分得来的、
-      // 精度有限：当 repPeakTravel 很小时 0.6×小值≈0，条件几乎永不成立，
-      // 于是**每次停顿都被判成"顶"** → 永远等不到底停顿 → 一次也数不出来。
-      // 现场"刻意延长停顿也计不上数"正是这个后果（停顿识别成功，但判位错了）。
-      //
-      // 改成用**停顿序号交替**判位，位移只作强证据时的校正。
-      //
-      // 为什么不再以位移为主：dx 来自加速度二次积分，实测并不准——
-      // 2 秒的重复里 0.01g 的零偏就能造成约 0.2 米误差，与 0.35 米的真实行程同量级，
-      // 而判位门槛只有 4 厘米，于是 dx 的正负号基本随机 → 约一半停顿判错位置 → 少计一半。
-      //
-      // 停顿本身是严格交替的（底→顶→底→顶），且武装只发生在上举开始时，
-      // 所以**武装后的第 1 次停顿必为顶，第 2 次必为底**。这个结构不需要任何积分。
-      this.pauseIndexInRep += 1
-      const dx = this.lastPauseX === null ? 0 : this.xVert - this.lastPauseX
-      this.lastPauseX = this.xVert
-      let isBottom = this.pauseIndexInRep % 2 === 0
-      // 位移方向非常明确时以它为准（门槛远高于积分噪声，避免被噪声带偏）
-      if (dx < -this.opt.strongSegmentTravelM) isBottom = true
-      else if (dx > this.opt.strongSegmentTravelM) isBottom = false
-      this.lastPauseAtBottom = isBottom
+      // 记录两次停顿之间的运动强度，用来排除"原地停两次"
+      const movedBetween = this.pauseMaxOmega >= this.opt.armOmegaDps
+      this.pauseMaxOmega = 0
 
-      if (!isBottom) {
-        // 顶停顿：记下"到过顶"，但**不结束**这次重复——把整个下放留在同一次内，
-        // 这正是"下放半程被算成第二次"（实测 7/124 条）的根治办法
-        this.topPauseSeen = true
-        this.fallStartT = 0
+      // 只跳过「武装之前就已经在进行」的那次停顿（即本组开始前就停着的状态）。
+      // 注意**不能跳过错过的第一个停顿**：武装发生在上举开始时，所以计数器
+      // 看到的第一个停顿必然是**顶停顿**，它必须算 0.5。
+      // 早先按"第一个停顿只用来定相位"跳过它，导致整条链错半个、每次都少一次
+      // （实测 12 次只数出 11）。
+      if (this.pauseStartT !== 0 && this.pauseStartT <= this.armT) return null
+      // 两道守卫：两次停顿之间必须真的动过，且间隔不能太短（防止原地反复停）。
+      // 第一次停顿没有"上一次"，间隔视作无穷大——早先写成 `?? s.t` 会算成 0，
+      // 于是第一次停顿被这条守卫吃掉，整条链少半个、总数总差一次（实测 12 数成 11）。
+      const prevT = this.pauseTs[this.pauseTs.length - 1]
+      const interval = prevT === undefined ? Number.POSITIVE_INFINITY : s.t - prevT
+      if (!movedBetween || interval < this.opt.halfCycleMinMs) {
+        this.pauseTs.push(s.t) // 仍记住时刻，但不计 0.5
         return null
       }
 
-      // 底停顿：锚定底部高度（位移零点逐次校准）
-      this.xRef = this.xVert
-      this.travelValley = 0
-      if (!this.topPauseSeen) {
-        // 没到过顶 → 不是完整的一次（半程动作）
-        return null
-      }
-      this.armed = false
-      this.topPauseSeen = false
-      this.fallStartT = 0
-      const startMs = this.valleyT
+      this.halves += 1 // 半个重复`n
+      if ((globalThis as any).DBG) console.log("PAUSE t=" + s.t + " halves=" + this.halves + " moved=" + movedBetween + " int=" + interval)
+      this.pauseTs.push(s.t)
+      if (this.halves % 2 !== 0) return null // 还差半个
+
+      // 攒满 2 个半 → 1 次。起点取「两个半之前那次停顿」的时刻，覆盖完整一次重复
+      const startMs = this.pauseTs[Math.max(0, this.pauseTs.length - 3)] ?? s.t
       const durationMs = s.t - startMs
       const excursion = this.repPeak - this.repValley
       this.valley = metric
       this.valleyT = s.t
+      this.armed = false
       return this.accept(excursion, durationMs, startMs, s.t, false)
     }
 

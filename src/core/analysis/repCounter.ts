@@ -428,6 +428,10 @@ export class RepCounter {
   private pauseEdge = false
   /** 本次重复内的停顿序号（1 = 顶，2 = 底），武装时清零 */
   private pauseIndexInRep = 0
+  /** 当前这段安静是从何时开始的（0 = 现在不安静） */
+  private pauseStartT = 0
+  /** 本次重复的武装时刻 */
+  private armT = 0
   /** 本次重复是否已经到过顶停顿（语法化边界：必须有顶才认一次） */
   private topPauseSeen = false
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
@@ -654,6 +658,12 @@ export class RepCounter {
     for (const q of this.quietRing) quietSum += q
     this.pauseQuiet = this.quietRing.length >= this.quietCap ? quietSum / this.quietRing.length : 0
     if (this.pauseQuiet >= this.opt.pauseQuietFrac) this.pauseObserved = true
+    // 记录"这段安静是从什么时候开始的"，用于区分「本次重复开始之前就在进行的停顿」
+    if (quietNow) {
+      if (this.pauseStartT === 0) this.pauseStartT = s.t
+    } else {
+      this.pauseStartT = 0
+    }
 
     // 计数标量：gravity 用姿态改变量，gyro 用角速度模长包络，accel 用竖直位移
     const metric =
@@ -718,6 +728,7 @@ export class RepCounter {
         this.lastPauseX = this.xVert
         // 武装发生在上举开始时 → 本次重复的第 1 次停顿必为顶停顿（交替判位用）
         this.pauseIndexInRep = 0
+        this.armT = s.t
       }
       return null
     }
@@ -776,6 +787,12 @@ export class RepCounter {
       }
       if (this.pauseEdge) return null
       this.pauseEdge = true
+      // **只处理「本次重复开始之后才开始」的停顿**。
+      // 否则：若在底部停着时就武装了（|ω| ≥ 12°/s，手微微一调就够），
+      // 那个底部停顿会被当成"第 1 次停顿"→ 奇数 → 判定为顶，
+      // 整条链错一位，真正的顶被当成底 → **在顶端计数**。
+      // 这正是现场"在最高点计数比较普遍"的成因（不是网站延迟）。
+      if (this.pauseStartT === 0 || this.pauseStartT <= this.armT) return null
 
       // 零速修正：停顿期间速度严格为 0，于是积分误差被逐次清零、不再累积
       this.vVert = 0

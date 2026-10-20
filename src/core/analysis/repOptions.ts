@@ -23,14 +23,9 @@ export function repOptionsFor(actionId: number): Partial<RepCounterOptions> {
   switch (actionId) {
     case 1:
       // 坐姿推举：启用停顿语法（顶端/底端各有明显停顿）
-      return {
-        ...base,
-        requirePause: true,
-        pauseMinMs: 400, // 现场实测两端各停 0.4~0.6s
-        pauseOmegaDps: 30,
-        pauseAccelG: 0.03,
-        pauseQuietFrac: 0.8, // 滑动窗口容错：允许 20% 样本有扰动
-      }
+      // 停顿的判定参数统一放在 repCounter.ts 的 DEFAULT_REP_OPTIONS 里，
+      // 这里不再重复配置，避免两处不一致。
+      return { ...base, requirePause: true }
     case 2:
       // 站姿侧平举：姿态/角速度判据已足够，不套用停顿语法
       return { ...base, requirePause: false }

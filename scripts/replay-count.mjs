@@ -7,6 +7,7 @@ const rows = JSON.parse(readFileSync('D:/lindoway/.tmp-data/collect.json', 'utf8
 const server = await createServer({ configFile: 'vite.config.ts', server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' })
 const { segmentMotion } = await server.ssrLoadModule('/src/core/analysis/segmentation.ts')
 const { RepCounter } = await server.ssrLoadModule('/src/core/analysis/repCounter.ts')
+const { repOptionsFor } = await server.ssrLoadModule('/src/core/analysis/repOptions.ts')
 
 // 结构上可确证的真值。注意这里**不含 #2 和 #25**：
 // 早先拿 segmentMotion 的输出当真值是错的（#2 它说 19，#25 它说 1，都没有独立验证过波形）。
@@ -32,7 +33,7 @@ let tot = 0
 for (const { i, r, ss } of cont) {
   const om = Math.max(...ss.map((s) => Math.hypot(s.gx, s.gy, s.gz)))
   const seg = segmentMotion(ss).length
-  const c = new RepCounter()
+  const c = new RepCounter(repOptionsFor(r.actionId))
   const evs = []
   for (const s of ss) {
     const e = c.push(s)
@@ -62,7 +63,7 @@ console.log(`基准用例通过 ${ok}/${tot}`)
 const detail = [2, 27, 201, 203]
 for (const i of detail) {
   const ss = rows[i].samples
-  const c = new RepCounter()
+  const c = new RepCounter(repOptionsFor(r.actionId))
   const evs = []
   for (const s of ss) {
     const e = c.push(s)

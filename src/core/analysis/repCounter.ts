@@ -206,6 +206,20 @@ export interface RepCounterOptions {
    */
   pauseAccelG: number
   /**
+   * 「静止」判定的**相对比例**：|ω| 与 |a_vert| 都要低于 `该比例 × 动作强度`。
+   *
+   * 为什么必须相对：绝对门槛在慢动作上会导致整段都算静止（没有停顿上升沿 → 记不上数），
+   * 在快动作上又偏松（转角短暂减速被当成停顿 → 多记）。
+   * 动作强度取最近若干秒的第 70 分位，于是同一个比例对快慢都成立。
+   */
+  pauseQuietRatio: number
+  /** 静止门槛的角速度绝对下限（°/s）：再慢的动作也不低于它，避免把噪声当运动 */
+  pauseOmegaFloor: number
+  /** 静止门槛的加速度绝对下限（g） */
+  pauseAccelFloor: number
+  /** 估计动作强度的窗口（ms） */
+  motionLevelWindowMs: number
+  /**
    * 停顿判定：窗口内「安静样本」的比例下限。
    * **不能要求严格连续**——按 400ms 连续校验时，只要中间有一个噪声样本
    * quietRun 就归零、整次停顿识别失败（这正是现场"少计很多次"的成因）。
@@ -308,6 +322,10 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   quietAccelG: 0.03,
   pauseOmegaDps: 45,
   pauseAccelG: 0.08,
+  pauseQuietRatio: 0.7,
+  pauseOmegaFloor: 8,
+  pauseAccelFloor: 0.02,
+  motionLevelWindowMs: 4000,
   pauseQuietFrac: 0.7,
   pauseMinMs: 300,
   topPauseTravelRatio: 0.6,
@@ -450,6 +468,12 @@ export class RepCounter {
   private pauseTs: number[] = []
   /** 上一次停顿之后见过的最大角速度（判断两次停顿之间是否真的动过） */
   private pauseMaxOmega = 0
+  /** 动作强度估计：|ω| 与 |a_vert| 的滑动窗口（取 p70 = 动作强度） */
+  private motionRing: number[] = []
+  private accelRing: number[] = []
+  private motionCap: number
+  private omegaLevel = 0
+  private accelLevelRef = 0
   /** 本次重复是否已经到过顶停顿（语法化边界：必须有顶才认一次） */
   private topPauseSeen = false
   /** 最近一次重复的路径长度与净位移（诊断/研究用） */
@@ -485,6 +509,8 @@ export class RepCounter {
     this.omegaRingCap = Math.max(20, Math.round(this.opt.noiseWindowMs / 20))
     // 停顿确认窗口 = pauseMinMs 对应的样本数（50Hz → 20ms/样本）
     this.quietCap = Math.max(4, Math.round(this.opt.pauseMinMs / 20))
+    // 动作强度窗口（50Hz → 20ms/样本）
+    this.motionCap = Math.max(20, Math.round(this.opt.motionLevelWindowMs / 20))
   }
 
   /** 各类拒因的累计次数 */
@@ -664,10 +690,29 @@ export class RepCounter {
     if (travel < this.travelValley) this.travelValley = travel
     if (Math.abs(travel) > this.maxAbsTravel) this.maxAbsTravel = Math.abs(travel)
 
+    // ---- 动作强度：最近 motionLevelWindowMs 内 |ω| 与 |a_vert| 的第 70 分位 ----
+    // 为什么需要它：绝对门槛不可能同时适配快动作和慢动作。
+    // 实测现场：慢动作时 |ω| 只有 20~30°/s，整段都低于"静止"门槛 → 静音判定连续为真
+    // → 没有新的停顿上升沿 → 一次也记不上；快动作时门槛又偏松，转角短暂减速被当成停顿 → 多记。
+    this.motionRing.push(omegaMag)
+    this.accelRing.push(Math.abs(aVert))
+    if (this.motionRing.length > this.motionCap) this.motionRing.shift()
+    if (this.accelRing.length > this.motionCap) this.accelRing.shift()
+    const p70 = (a: number[]) => {
+      if (a.length < 20) return 0
+      const s = [...a].sort((x, y) => x - y)
+      return s[Math.floor(s.length * 0.7)]
+    }
+    this.omegaLevel = p70(this.motionRing)
+    this.accelLevelRef = p70(this.accelRing)
+    // 静止门槛 = max(绝对下限, 比例 × 动作强度)，于是慢动作和快动作都能正确区分
+    const quietOmegaTh = Math.max(this.opt.pauseOmegaFloor, this.opt.pauseQuietRatio * this.omegaLevel)
+    const quietAccelTh = Math.max(this.opt.pauseAccelFloor, this.opt.pauseQuietRatio * this.accelLevelRef)
+
     // 停顿检测：**每个样本都做**（不能只在武装期间）。
     // 早先放在武装分支里，导致动作之间的静止段无法建立 pauseObserved，
     // 而回落判据又在停顿建立之前就先触发了 → 自适应判据等于没生效（实测与改前完全一致）。
-    const quietNow = omegaMag < this.opt.pauseOmegaDps && Math.abs(aVert) < this.opt.pauseAccelG
+    const quietNow = omegaMag < quietOmegaTh && Math.abs(aVert) < quietAccelTh
     // 记录"上一次停顿之后的最大角速度"，用来判断两次停顿之间是否真的动过
     if (!quietNow && omegaMag > this.pauseMaxOmega) this.pauseMaxOmega = omegaMag
     // 用**滑动窗口比例**而不是严格连续：按连续校验时，只要中间有一个噪声样本

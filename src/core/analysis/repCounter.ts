@@ -332,8 +332,8 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   quietAccelG: 0.03,
   pauseOmegaDps: 45,
   pauseAccelG: 0.08,
-  pauseQuietRatio: 0.7,
-  pauseOmegaFloor: 8,
+  pauseQuietRatio: 0.3,
+  pauseOmegaFloor: 20,
   pauseAccelFloor: 0.02,
   motionLevelWindowMs: 4000,
   moveRatio: 0.5,
@@ -719,7 +719,7 @@ export class RepCounter {
     const p70 = (a: number[]) => {
       if (a.length < 20) return 0
       const s = [...a].sort((x, y) => x - y)
-      return s[Math.floor(s.length * 0.7)]
+      return s[Math.floor(s.length * 0.9)]
     }
     this.omegaLevel = p70(this.motionRing)
     this.accelLevelRef = p70(this.accelRing)

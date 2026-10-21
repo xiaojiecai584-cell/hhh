@@ -54,6 +54,10 @@ export default function ConnectPage() {
   const pending = useBleStore((s) => s.pending)
   const startRecording = useBleStore((s) => s.startRecording)
   const stopRecording = useBleStore((s) => s.stopRecording)
+  const exportRawRecording = useBleStore((s) => s.exportRawRecording)
+  // 原始帧导出用的真值与工况（与标注流程的 trueReps/condition 分开，避免互相干扰）
+  const [rawTrueReps, setRawTrueReps] = useState(0)
+  const [rawCondition, setRawCondition] = useState<RecCondition>('normal')
   const submitSegments = useBleStore((s) => s.submitSegments)
   const discardPending = useBleStore((s) => s.discardPending)
   const profile = useBodyStore((s) => s.profile)
@@ -590,6 +594,52 @@ export default function ConnectPage() {
                     开始录制
                   </button>
                 )}
+              </div>
+              {/* 原始帧导出：数据页的导出只含分析结果，标定计数/验证停顿判据需要逐帧原始量 */}
+              <div className="row" style={{ marginTop: 10, gap: 8, alignItems: 'flex-end' }}>
+                <label className="field" style={{ flex: 1 }}>
+                  <span className="field__label">本段真实次数</span>
+                  <input
+                    className="input"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    max={99}
+                    value={rawTrueReps}
+                    onChange={(e) => setRawTrueReps(Number(e.target.value))}
+                  />
+                </label>
+                <label className="field" style={{ flex: 1 }}>
+                  <span className="field__label">工况</span>
+                  <select
+                    className="input"
+                    value={rawCondition}
+                    onChange={(e) => setRawCondition(e.target.value as RecCondition)}
+                  >
+                    {Object.entries(CONDITION_LABEL).map(([k, v]) => (
+                      <option key={k} value={k}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <button
+                className="btn btn--ghost"
+                style={{ marginTop: 8, width: '100%' }}
+                onClick={() =>
+                  exportRawRecording({
+                    trueReps: rawTrueReps,
+                    condition: rawCondition,
+                    note: '哑铃竖直平移，两端停顿',
+                  })
+                }
+              >
+                导出原始数据（JSON）
+              </button>
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                先「开始录制」→ 做完动作 →「停止录制」→ 填真实次数 → 导出。
+                导出的是逐帧原始量，可直接用于标定计数。
               </div>
             </>
           )}

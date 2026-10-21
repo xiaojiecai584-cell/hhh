@@ -161,6 +161,11 @@ interface BleState {
   sendStopAction: (label?: string) => Promise<void>
   setTargetReps: (n: number) => void
   startRecording: () => void
+  /**
+   * 导出刚录到的原始帧为 JSON（纯前端下载）。
+   * 标定计数与验证停顿判据都需要原始帧，而数据页的导出只含分析结果。
+   */
+  exportRawRecording: (meta?: { trueReps?: number; condition?: RecCondition; note?: string }) => void
   stopRecording: (opts?: { skipSegment?: boolean }) => void
   submitSegments: (labels: (ManualLabel | null)[], meta?: RecordMeta) => Promise<void>
   discardPending: () => void
@@ -514,6 +519,59 @@ export const useBleStore = create<BleState>((set) => ({
     segmentRanges = []
     recordingFlag = true
     set({ recording: true, recordingCount: 0, pending: null })
+  },
+
+  /**
+   * 把刚录到的**原始帧**导出成 JSON（纯前端下载，不依赖任何后端）。
+   *
+   * 为什么需要它：`SessionRecord`（数据页导出的那个）只含分析结果，
+   * 没有逐帧的 ax/ay/az/gx/gy/gz；而标定计数、验证停顿判据都需要原始帧。
+   * `submitSegments` 是 POST 到 /api/collect，线上站点没有这个后端，数据会丢。
+   *
+   * 导出内容：动作、真实次数（人工填）、工况、采样率，以及全部帧。
+   */
+  exportRawRecording: (meta) => {
+    const buf = recordBuffer
+    if (!buf.length) {
+      set({ error: '没有可导出的数据：请先点「开始录制」再采集' })
+      return
+    }
+    const actionId = useBleStore.getState().currentActionId ?? 1
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      actionId,
+      actionName: ACTION_NAMES[actionId] ?? `动作${actionId}`,
+      trueReps: meta?.trueReps ?? 0,
+      condition: meta?.condition ?? 'none',
+      note: meta?.note ?? '',
+      device: {
+        name: useBleStore.getState().deviceName ?? 'unknown',
+        placement: 'dumbbell',
+        samplingRateHz: Number(estimateSamplingRate(buf).toFixed(2)),
+      },
+      frameCount: buf.length,
+      durationMs: Math.round(buf[buf.length - 1].t - buf[0].t),
+      frames: buf.map((s) => ({
+        t: Math.round(s.t),
+        ax: s.ax,
+        ay: s.ay,
+        az: s.az,
+        gx: s.gx,
+        gy: s.gy,
+        gz: s.gz,
+      })),
+    }
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `lindoway-raw-${payload.actionName}-${payload.trueReps}reps-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    set((s) => ({
+      txLog: [...s.txLog, { id: seq++, hex: '—', label: `导出原始数据 ${buf.length} 帧` }].slice(-50),
+    }))
   },
 
   // 录制只是「暂时采集数据」，与是否结束本组（0x83）无关

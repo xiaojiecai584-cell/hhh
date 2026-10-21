@@ -220,6 +220,16 @@ export interface RepCounterOptions {
   /** 估计动作强度的窗口（ms） */
   motionLevelWindowMs: number
   /**
+   * 「两次停顿之间确实动过」的门槛比例：`|ω| 峰值 ≥ 该比例 × 动作强度`。
+   *
+   * 为什么不能用一个小的绝对值（原来 12°/s）：现场首尾静止保持期间手部会小幅移动，
+   * 一次「停顿→微动→再停顿」就多算 0.5。实测表现为**快慢都多记 1~2 次**
+   * （12 次 = 24 个半，多 2~4 个半就正好多 1~2 次）。
+   * 改为相对门槛后，静止期的小动作（十几 °/s）达不到本组动作强度的该比例而被排除，
+   * 真实的半循环（接近动作强度）照常通过。
+   */
+  moveRatio: number
+  /**
    * 停顿判定：窗口内「安静样本」的比例下限。
    * **不能要求严格连续**——按 400ms 连续校验时，只要中间有一个噪声样本
    * quietRun 就归零、整次停顿识别失败（这正是现场"少计很多次"的成因）。
@@ -326,6 +336,7 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   pauseOmegaFloor: 8,
   pauseAccelFloor: 0.02,
   motionLevelWindowMs: 4000,
+  moveRatio: 0.5,
   pauseQuietFrac: 0.7,
   pauseMinMs: 300,
   topPauseTravelRatio: 0.6,
@@ -532,10 +543,17 @@ export class RepCounter {
     return Math.min(this.opt.omegaGateMax, Math.max(this.opt.omegaGateFloor, floor * this.opt.noiseFloorRatio))
   }
 
+  /**
+   * 「两次停顿之间确实动过」的门槛（°/s）：`max(12, moveRatio × 动作强度)`。
+   * 动作强度还没建立时退回绝对下限。
+   */
+  private moveThreshold(): number {
+    return Math.max(this.opt.armOmegaDps, this.opt.moveRatio * this.omegaLevel)
+  }
+
   /** 最近一次计数的通过方式 */
   get lastMatchedByGate(): boolean {
-    return this.lastMatchedBy === 'gate'
-  }
+    return this.lastMatchedBy === 'gate'  }
 
   get repCount(): number {
     return this.count
@@ -849,7 +867,7 @@ export class RepCounter {
       this.pauseEdge = true
 
       // 记录两次停顿之间的运动强度，用来排除"原地停两次"
-      const movedBetween = this.pauseMaxOmega >= this.opt.armOmegaDps
+      const movedBetween = this.pauseMaxOmega >= this.moveThreshold()
       this.pauseMaxOmega = 0
 
       // 只跳过「武装之前就已经在进行」的那次停顿（即本组开始前就停着的状态）。

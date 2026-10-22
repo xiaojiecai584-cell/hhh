@@ -62,7 +62,7 @@
   <text x="342" y="462" font-size="12.5" fill="#374151">　＋峰谷自适应状态机</text>
   <text x="342" y="484" font-size="12.5" fill="#374151">· sampleRing ≤1000 点切片</text>
   <text x="342" y="506" font-size="12.5" fill="#374151">· 达标自动下发 0x83</text>
-  <text x="342" y="536" font-size="11.5" fill="#6b7280">计数在本地完成，不依赖网络</text>
+  <text x="342" y="536" font-size="11.5" fill="#6b7280">计数在上位机完成，不依赖云端</text>
 
   <rect x="612" y="364" width="248" height="196" rx="8" fill="#ffffff" stroke="#93c5fd" stroke-width="1.5"/>
   <text x="628" y="390" font-size="14.5" font-weight="700" fill="#1e3a8a">③ 组分析与报告</text>

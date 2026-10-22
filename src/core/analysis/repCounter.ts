@@ -333,10 +333,22 @@ export const DEFAULT_REP_OPTIONS: RepCounterOptions = {
   pauseOmegaDps: 45,
   pauseAccelG: 0.08,
   pauseQuietRatio: 0.3,
-  pauseOmegaFloor: 20,
-  pauseAccelFloor: 0.02,
+  /**
+   * 角速度绝对下限（°/s）。**由真实数据定**：
+   * 一段 12 次标准坐姿推举（55.9s、50Hz）实测 |ω| 的 p50=12.3、p90=26.3、max=72.4。
+   * 所以下限必须明显低于 12°/s，否则连"中位运动"都会被判成静止
+   * （早先设 20°/s 时，一半以上的运动时间都被当成停顿）。
+   * 取 10 —— 落在真实数据拟合出的稳健平台（6~14）中部。
+   */
+  pauseOmegaFloor: 10,
+  /**
+   * 加速度绝对下限（g）。同一份数据 |a_vert| 的 p50=0.03、p90=0.09、max=0.25。
+   * 取 0.05（平台 0.03~0.06 中部）。
+   */
+  pauseAccelFloor: 0.05,
   motionLevelWindowMs: 4000,
-  moveRatio: 0.5,
+  /** 「动过」门限比例。真实数据拟合出的稳健平台是 0.5~1.2，取中部 0.7。 */
+  moveRatio: 0.7,
   pauseQuietFrac: 0.7,
   pauseMinMs: 300,
   topPauseTravelRatio: 0.6,

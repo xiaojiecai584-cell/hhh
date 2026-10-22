@@ -25,7 +25,6 @@ const ERROR_CODES = Object.keys(ERROR_LABEL)
 
 /** 调试站专用：连接调试、BLE 地址、原始帧、录制标注。用户界面见 TrainingPage。 */
 export default function ConnectPage() {
-  const kind = useBleStore((s) => s.kind)
   const state = useBleStore((s) => s.state)
   const deviceName = useBleStore((s) => s.deviceName)
   const latestPose = useBleStore((s) => s.latestPose)
@@ -33,11 +32,9 @@ export default function ConnectPage() {
   const events = useBleStore((s) => s.events)
   const txLog = useBleStore((s) => s.txLog)
   const error = useBleStore((s) => s.error)
-  const setKind = useBleStore((s) => s.setKind)
   const connect = useBleStore((s) => s.connect)
   const disconnect = useBleStore((s) => s.disconnect)
   const sendStartAction = useBleStore((s) => s.sendStartAction)
-  const simulate = useBleStore((s) => s.simulateDeviceStart)
   const clearEvents = useBleStore((s) => s.clearEvents)
   const rawRx = useBleStore((s) => s.rawRx)
   const rxCounts = useBleStore((s) => s.rxCounts)
@@ -154,29 +151,6 @@ export default function ConnectPage() {
 
   return (
     <div className="page">
-      <div className="card">
-        <h3 className="card__title">设备类型</h3>
-        <div className="seg" style={{ marginTop: 10 }}>
-          <button
-            className={`seg__btn${kind === 'virtual' ? ' seg__btn--active' : ''}`}
-            onClick={() => setKind('virtual')}
-          >
-            虚拟设备
-          </button>
-          <button
-            className={`seg__btn${kind === 'web' ? ' seg__btn--active' : ''}`}
-            onClick={() => setKind('web')}
-          >
-            Web 蓝牙
-          </button>
-        </div>
-        <p className="card__desc" style={{ marginTop: 10 }}>
-          {kind === 'virtual'
-            ? '内置模拟设备，按 BT36 协议模拟 50Hz 姿态流 + ACK + 事件。'
-            : '通过 Web Bluetooth 连接 BLE 透传模块（Android Chrome / Edge）。'}
-        </p>
-      </div>
-
       <div className="card">
         <div className="row">
           <h3 className="card__title">BLE 参数（Web 蓝牙）</h3>
@@ -299,22 +273,6 @@ export default function ConnectPage() {
               onChange={(e) => setTargetReps(Number(e.target.value))}
             />
           </label>
-          <div className="btn-grid" style={{ marginTop: 10 }}>
-            {MOTION_TEMPLATES.map((t) => (
-              <button
-                key={`sim-${t.id}`}
-                className="btn btn--ghost"
-                onClick={() => simulate(t.actionId, 1, targetReps > 0 ? targetReps : 10)}
-                disabled={busy}
-              >
-                模拟设备启动·{t.name}
-              </button>
-            ))}
-          </div>
-          <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            启动权在设备端（语音关键词 / 隐私倒计时）。上面这组按钮让**虚拟设备**发出一帧
-            0x02 动作开始事件，用于在没有真机时验证 App 的响应。
-          </p>
           <div className="btn-grid" style={{ marginTop: 10 }}>
             {MOTION_TEMPLATES.map((t) => (
               <button

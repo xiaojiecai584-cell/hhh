@@ -2,21 +2,27 @@
 
 本包内含源码、已构建产物、协议与算法文档、以及全部验证脚本。
 
-## 一、直接看效果（无需安装）
+## 一、直接看效果（推荐：双击 `启动（双击我）.bat`）
 
-`dist/` 是已构建好的静态站点。任选一种方式起一个静态服务器（**必须用 HTTP 访问，
-不能双击 index.html**，因为 Vite 构建产物使用绝对路径 `/assets/...`）：
+解压后**双击 `启动（双击我）.bat`**，会在 `http://localhost:8788` 起一个本地服务并自动打开浏览器。
+关闭那个黑窗口即停止服务。
+
+> ⚠️ **不要直接双击 `index.html`**，两个原因：
+> 1. 包根目录的 `index.html` 是**源码入口**（引用 `/src/main.tsx`），只有 Vite 开发服务器能解析；
+> 2. 即使双击 `dist/index.html` 也不行——Chrome 会以 CORS 策略拦截 `file://` 下的 module 脚本，
+>    且 Web Bluetooth 只在 `localhost` 或 HTTPS 下可用。
+
+也可以手动起服务：
 
 ```powershell
-# 方式 A：Node（推荐，无需装包）
+node serve-dist.mjs          # 本包自带，纯 Node 无依赖，端口 8788
+# 或用其它静态服务器
 npx serve dist
-
-# 方式 B：Python
-python -m http.server 8080 --directory dist
 ```
 
-浏览器打开提示的地址即可。**注意**：Web Bluetooth 只在 `localhost` 或 HTTPS 下可用，
-所以本地起服务必须用 `localhost` 访问，不要用局域网 IP。
+浏览器打开 `http://localhost:8788/#/main`（用户界面）或 `/#/debug`（调试站）。
+
+**注意**：必须用 `localhost` 访问，不要用局域网 IP，否则 Web Bluetooth 不可用。
 
 ## 二、从源码重新构建
 

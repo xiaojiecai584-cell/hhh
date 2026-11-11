@@ -1,4 +1,4 @@
-import { classifyMotion, type RuleResult } from './ruleClassifier'
+import { classifyMotion, ERROR_DEDUCTION, type RuleResult } from './ruleClassifier'
 import {
   phaseRanges,
   toApiSample,
@@ -166,13 +166,29 @@ export async function analyzeSet(
     }
   }
 
+  // ================= 整组扣分制 =================
+  // 总分 = 100 − Σ(某类错误出现次数 × 该类分值 ÷ 本组总个数)，下限 0。
+  //
+  // 为什么按"次数 ÷ 总个数"：这样扣分与**动作质量的一致性**挂钩，而不是与组的大小挂钩。
+  // 同一套动作做 12 次里有 3 次行程不足，与做 6 次里有 1.5 次行程不足，扣分相同；
+  // 若直接按次数累加，做得多的人反而被扣得更狠，不合理。
+  // 分母用 `usable.length`（实际可用于评估的次数），避免把"信号不可用"的次数算进分母。
+  const deductor = usable.length > 0 ? usable.length : 1
+  let setOverall = 100
+  for (const [code, stat] of errorMap) {
+    const points = ERROR_DEDUCTION[code] ?? 0
+    setOverall -= (stat.count * points) / deductor
+  }
+  setOverall = Math.max(0, Math.round(setOverall * 100) / 100)
+
   return {
     actionId: opts.actionId,
     actionName: opts.actionName,
     totalReps: out.length,
     usableReps: usable.length,
     avgScore: {
-      overall: mean(usable.map((r) => r.score.overall)),
+      // 总分走扣分制；四个维度分保留为诊断信息（各次算术平均）
+      overall: setOverall,
       rangeOfMotion: mean(usable.map((r) => r.score.rangeOfMotion)),
       tempo: mean(usable.map((r) => r.score.tempo)),
       stability: mean(usable.map((r) => r.score.stability)),

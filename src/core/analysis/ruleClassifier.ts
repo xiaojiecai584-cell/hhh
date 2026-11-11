@@ -38,7 +38,6 @@ export interface RuleScore {
   /** 扣分明细（扣分制的依据）；旧记录没有该字段，读取时按缺失处理 */
   deductions?: { code: string; points: number }[]
 }
-
 export interface RuleResult {
   signalQuality: SignalQualityResult
   standard: boolean
@@ -57,33 +56,41 @@ export const ACTION_RULES: Record<number, { axis: 'gx' | 'gy' | 'gz'; minPeak: n
 
 /** 共用阈值（后端 ActionThresholds） */
 export const THRESHOLDS = {
-  fastMs: 1000, // durationMs < 1000 → TEMPO_TOO_FAST
-  slowMs: 5000, // durationMs > 5000 → TEMPO_TOO_SLOW
-  unstableStd: 7.0, // stabilityStd > 7.0 → UNSTABLE_MOTION
-  minCompleteMs: 1000, // durationMs < 1000 → 未完整完成
-  endpointRatio: 0.35, // endpoint > min_peak × 0.35 → 未完整完成
+  fastMs: 1000,
+  slowMs: 5000,
+  unstableStd: 7.0,
+  minCompleteMs: 1000,
+  endpointRatio: 0.35,
   tempoIdealMs: 2400,
+  /**
+   * 行程不垂直的判定：竖直方向运动能量占比 **低于** 该值即判为不垂直。
+   * 计算方式：把加速度按重力方向分解，`verticalRatio = var(a_vert) / (var(a_vert) + var(a_horiz))`。
+   * 0.6 是初值——标准推举应几乎全是竖直运动，占比接近 1；
+   * 待新一轮标注数据到位后按实测分布重新标定。
+   */
+  verticalRatio: 0.6,
+  /**
+   * 手腕外翻的判定：绕重力轴转动占转动路径的比例 **高于** 该值即判外翻。
+   * 沿用原先 twistRatioLimit 的 0.25。
+   */
+  twistRatio: 0.25,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {
   INSUFFICIENT_RANGE: { severity: 'medium', confidence: 0.9, phase: 'top' },
-  TEMPO_TOO_FAST: { severity: 'medium', confidence: 0.9, phase: 'lifting' },
-  TEMPO_TOO_SLOW: { severity: 'low', confidence: 0.85, phase: 'lifting' },
-  UNSTABLE_MOTION: { severity: 'medium', confidence: 0.85, phase: 'lifting' },
-  INCOMPLETE_REPETITION: { severity: 'high', confidence: 0.95, phase: null },
+  NOT_VERTICAL: { severity: 'low', confidence: 0.8, phase: 'lifting' },
+  WRIST_FLIP: { severity: 'low', confidence: 0.8, phase: 'lifting' },
 }
 
 /** 各错误码的固定严重程度（依据《当前错误分类标准》8.3 节，不得随意修改） */
 export const ERROR_SEVERITY: Record<string, Severity> = {
   INSUFFICIENT_RANGE: 'medium',
-  TEMPO_TOO_FAST: 'medium',
-  TEMPO_TOO_SLOW: 'low',
-  UNSTABLE_MOTION: 'medium',
-  INCOMPLETE_REPETITION: 'high',
+  NOT_VERTICAL: 'low',
+  WRIST_FLIP: 'low',
 }
 
 /** 高风险错误：命中后总分强制不高于 45，且教练建议强制降载 */
-export const HIGH_RISK_CODES: ErrorCode[] = ['INCOMPLETE_REPETITION']
+export const HIGH_RISK_CODES: ErrorCode[] = []
 
 /**
  * **扣分表**：每类错误命中一次扣多少分（扣分制评分的唯一依据）。
@@ -95,11 +102,9 @@ export const HIGH_RISK_CODES: ErrorCode[] = ['INCOMPLETE_REPETITION']
  *  - 五类全部命中合计扣 88 分，仍保留 12 分余地，不会直接归零。
  */
 export const ERROR_DEDUCTION: Record<string, number> = {
-  INCOMPLETE_REPETITION: 35, // high
-  INSUFFICIENT_RANGE: 18, // medium
-  UNSTABLE_MOTION: 15, // medium
-  TEMPO_TOO_FAST: 12, // medium
-  TEMPO_TOO_SLOW: 8, // low
+  INSUFFICIENT_RANGE: 20,
+  NOT_VERTICAL: 10,
+  WRIST_FLIP: 10,
 }
 
 /**
@@ -136,6 +141,52 @@ function stabilityStd(mainAxis: number[]): number {
   return std(residual)
 }
 
+/**
+ * 计算「竖直能量占比」与「手腕外翻占比」。
+ *
+ * - 竖直占比：把加速度按估出的重力方向分解，`var(a_vert)` 占 `var(a_vert)+var(a_horiz)` 的比例。
+ *   标准推举几乎全是竖直运动 → 接近 1；横向甩动会显著下降。
+ * - 外翻占比：`Σ|ω·ĝ| / Σ|ω|`，即绕重力轴的转动占转动路径的比例。
+ *   哑铃被手腕拧动时升高。
+ *
+ * 重力方向用一阶低通估计（τ≈1s，与 repCounter 里同一套做法），
+ * 只用到加速度与角速度，不依赖固件姿态解算。
+ */
+function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twistRatio: number } {
+  let g: { x: number; y: number; z: number } | null = null
+  let vEnergy = 0
+  let hEnergy = 0
+  let twistPath = 0
+  let totalPath = 0
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]
+    const a = { x: s.ax, y: s.ay, z: s.az }
+    if (!g) g = { ...a }
+    else {
+      const dt = i > 0 ? Math.max(1e-3, (s.t - samples[i - 1].t) / 1000) : 0.02
+      const k = 1 - Math.exp(-dt / 1.0)
+      g = { x: g.x + (a.x - g.x) * k, y: g.y + (a.y - g.y) * k, z: g.z + (a.z - g.z) * k }
+    }
+    const gm = Math.hypot(g.x, g.y, g.z) || 1
+    const ux = g.x / gm
+    const uy = g.y / gm
+    const uz = g.z / gm
+    const along = a.x * ux + a.y * uy + a.z * uz
+    const aMag2 = a.x * a.x + a.y * a.y + a.z * a.z
+    const horiz2 = Math.max(0, aMag2 - along * along)
+    vEnergy += (along - 1) * (along - 1)
+    hEnergy += horiz2
+    const wmag = Math.hypot(s.gx, s.gy, s.gz)
+    twistPath += Math.abs(s.gx * ux + s.gy * uy + s.gz * uz)
+    totalPath += wmag
+  }
+  const denom = vEnergy + hEnergy
+  return {
+    verticalRatio: denom > 0 ? vEnergy / denom : 1,
+    twistRatio: totalPath > 0 ? twistPath / totalPath : 0,
+  }
+}
+
 export function classifyMotion(samples: SensorSample[], actionId: number): RuleResult {
   const signalQuality = assessQuality(samples)
   const rule = ACTION_RULES[actionId] ?? { axis: 'gy' as const, minPeak: 38, name: 'unknown' }
@@ -168,15 +219,19 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   const energy = axis.reduce((a, v) => a + v * v, 0) / axis.length
   const topDurationMs = durationMs * 0.1
 
-  const endpointThreshold = endpointThresholdFor(rule.minPeak)
+  // ---- 竖直能量占比 与 手腕外翻占比 ----
+  // 竖直：把加速度按重力方向分解，取"沿重力方向的动态能量"占全部动态能量的比例；
+  //       标准推举几乎全是竖直运动，占比接近 1；横着甩会明显下降。
+  // 外翻：绕重力轴的转动量占转动路径的比例；哑铃被手腕拧动时该值升高。
+  const { verticalRatio, twistRatio } = verticalAndTwist(samples)
+
   const codes: ErrorCode[] = []
+  // ① 行程不足：主轴峰值低于该动作的 min_peak
   if (peak < rule.minPeak) codes.push('INSUFFICIENT_RANGE')
-  if (durationMs < THRESHOLDS.fastMs) codes.push('TEMPO_TOO_FAST')
-  if (durationMs > THRESHOLDS.slowMs) codes.push('TEMPO_TOO_SLOW')
-  if (stab > THRESHOLDS.unstableStd) codes.push('UNSTABLE_MOTION')
-  if (durationMs < THRESHOLDS.minCompleteMs || endpoint > endpointThreshold) {
-    codes.push('INCOMPLETE_REPETITION')
-  }
+  // ② 行程不垂直：竖直方向的运动能量占比过低
+  if (verticalRatio < THRESHOLDS.verticalRatio) codes.push('NOT_VERTICAL')
+  // ③ 手腕外翻：绕重力轴的转动占转动路径的比例过高
+  if (twistRatio > THRESHOLDS.twistRatio) codes.push('WRIST_FLIP')
 
   const hasHigh = codes.some((c) => ERROR_META[c].severity === 'high')
   // 四个维度分**保留为诊断信息**（报告里仍展示，便于解释分数构成），

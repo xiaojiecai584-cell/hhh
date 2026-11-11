@@ -97,25 +97,17 @@ const r3800 = classifyMotion(axisSamples(2400, 38.0, 0), 1)
 check('坐姿推举峰值 37.99 → 命中行程不足', r3799.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'))
 check('坐姿推举峰值 38.00 → 不命中', !r3800.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'))
 
-const f999 = classifyMotion(axisSamples(999, 60, 0), 1)
-const f1000 = classifyMotion(axisSamples(1000, 60, 0), 1)
-check('时长 999ms → 过快 + 未完整', f999.errors.some((e) => e.code === 'TEMPO_TOO_FAST') && f999.errors.some((e) => e.code === 'INCOMPLETE_REPETITION'))
-check('时长 1000ms → 不因时长判过快/未完整', !f1000.errors.some((e) => e.code === 'TEMPO_TOO_FAST') && !f1000.errors.some((e) => e.code === 'INCOMPLETE_REPETITION'))
+// ---- 错误码已收敛为三类：行程不足 / 行程不垂直 / 手腕外翻 ----
+// 时长、稳定性、未完整完成三类判据已移除，对应断言一并删除。
+const normal = classifyMotion(axisSamples(2400, 60, 0), 1)
+check('标准动作（幅度足够、竖直、无外翻）不产生错误', normal.errors.length === 0, `实际 ${normal.errors.map((e) => e.code).join(',') || '无'}`)
+check('总分 100（无扣分）', normal.score.overall === 100, `实际 ${normal.score.overall}`)
 
-const s5000 = classifyMotion(axisSamples(5000, 60, 0), 1)
-const s5001 = classifyMotion(axisSamples(5001, 60, 0), 1)
-check('时长 5000ms → 不过慢', !s5000.errors.some((e) => e.code === 'TEMPO_TOO_SLOW'))
-check('时长 5001ms → 过慢', s5001.errors.some((e) => e.code === 'TEMPO_TOO_SLOW'))
+const weakRange = classifyMotion(axisSamples(2400, 20, 0), 1)
+check('峰值 20 < min_peak 38 → 行程不足', weakRange.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'))
+check('行程不足单次扣 20', weakRange.score.overall === 80, `实际 ${weakRange.score.overall}`)
 
-// 结束点角速度阈值（动作1 = 38 × 0.35 = 13.3）
-const e133 = classifyMotion(axisSamples(2400, 60, 13.3), 1)
-const e134 = classifyMotion(axisSamples(2400, 60, 13.4), 1)
-check('结束点 13.3 → 不因结束点判未完整', !e133.errors.some((e) => e.code === 'INCOMPLETE_REPETITION'))
-check('结束点 13.4 → 命中未完整', e134.errors.some((e) => e.code === 'INCOMPLETE_REPETITION'))
-
-// 高风险总分上限 45
-check('命中 high 时总分 ≤ 45', e134.score.overall <= 45, `实际 ${e134.score.overall}`)
-check('严重度固定为 INCOMPLETE_REPETITION=high', e134.errors.find((e) => e.code === 'INCOMPLETE_REPETITION').severity === 'high')
+check('扣分明细包含条目', Array.isArray(normal.score.deductions) && normal.score.deductions.length === 0)
 
 // 信号不可用时不输出动作错误
 const unusable = classifyMotion(mk(31), 1)

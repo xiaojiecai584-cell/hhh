@@ -25,14 +25,18 @@ export interface SensorSample {
 }
 
 
-// ---------- 枚举（与后端 ErrorCode/Severity/Phase/Quality 一一对应） ----------
-
-export type ErrorCode =
-  | 'INSUFFICIENT_RANGE'
-  | 'TEMPO_TOO_FAST'
-  | 'TEMPO_TOO_SLOW'
-  | 'UNSTABLE_MOTION'
-  | 'INCOMPLETE_REPETITION'
+// ---------- 枚举 ----------
+//
+// 错误码已按现场要求收敛为**三类**（原来的 TEMPO_TOO_FAST / TEMPO_TOO_SLOW /
+// UNSTABLE_MOTION / INCOMPLETE_REPETITION 已废弃）：
+//   INSUFFICIENT_RANGE 行程不足   扣 20 分/次
+//   NOT_VERTICAL       行程不垂直 扣 10 分/次
+//   WRIST_FLIP         手腕外翻   扣 10 分/次
+// 扣分按「出现次数 × 分值 ÷ 本组总个数」从 100 分里扣（见 setAnalysis.ts）。
+//
+// 注意：Python 后端仍使用旧的五类错误码，前后端此处**不再一一对应**；
+// 后端可用时由前端做一次映射（未知错误码按忽略处理），不可用时走本地规则。
+export type ErrorCode = 'INSUFFICIENT_RANGE' | 'NOT_VERTICAL' | 'WRIST_FLIP'
 
 export type Severity = 'low' | 'medium' | 'high'
 export type Phase = 'ready' | 'lifting' | 'top' | 'lowering' | 'complete' | 'unknown'

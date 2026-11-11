@@ -22,10 +22,8 @@ const STATE_LABEL: Record<string, string> = {
 
 const ERROR_LABEL: Record<string, string> = {
   INSUFFICIENT_RANGE: '行程不足',
-  TEMPO_TOO_FAST: '动作过快',
-  TEMPO_TOO_SLOW: '动作过慢',
-  UNSTABLE_MOTION: '动作不稳定',
-  INCOMPLETE_REPETITION: '未完整完成',
+  NOT_VERTICAL: '行程不垂直',
+  WRIST_FLIP: '手腕外翻',
 }
 const ERROR_CODES = Object.keys(ERROR_LABEL)
 

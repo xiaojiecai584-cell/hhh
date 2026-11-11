@@ -3,15 +3,12 @@ import { useBleStore } from '../store/useBleStore'
 import { useSubjectStore } from '../store/useSubjectStore'
 import { useApiConfigStore } from '../store/useApiConfigStore'
 import { SIGNAL_ISSUE_LABEL } from '../core/analysis/contract'
-import { ERROR_SEVERITY } from '../core/analysis/ruleClassifier'
 import { applySafetyOverride, coachAdvice, type CoachAdviceResult } from '../core/api/motionAi'
 
 const ERROR_LABEL: Record<string, string> = {
   INSUFFICIENT_RANGE: '行程不足',
-  TEMPO_TOO_FAST: '动作过快',
-  TEMPO_TOO_SLOW: '动作过慢',
-  UNSTABLE_MOTION: '动作不稳定',
-  INCOMPLETE_REPETITION: '未完整完成',
+  WRIST_FLIP: '手腕外翻',
+  NOT_VERTICAL: '行程不垂直',
 }
 const PHASE_LABEL: Record<string, string> = {
   ready: '准备',
@@ -267,9 +264,15 @@ export default function ReportPage() {
       )}
 
       <div className="muted" style={{ fontSize: 11, lineHeight: 1.7 }}>
-        错误类别与阈值来自《当前错误分类标准》：{Object.keys(ERROR_LABEL).map((c) => ERROR_LABEL[c]).join(' / ')}；
-        严重度固定为 {Object.entries(ERROR_SEVERITY).map(([k, v]) => `${ERROR_LABEL[k]}=${v}`).join('、')}。
-        当前阈值为工程基线，未经过真实用户与教练标定。
+        评分口径：<b>扣分制</b>——从 100 分起扣，整组分 = 100 − Σ(该类错误出现次数 × 该类分值 ÷
+        本组可评估次数)，下限 0。
+        <br />
+        三类错误：行程不足（峰值低于该动作门槛，推举 38°/s、侧平举 34°/s）<b>−25 分/次</b>；手腕外翻（绕重力轴
+        转动占转动路径 &gt; 0.25）<b>−15 分/次</b>；行程不垂直（竖直方向动态能量占比 &lt; 0.6）
+        <b>−10 分/次</b>。
+        <br />
+        说明：上述<b>门槛仍是工程基线</b>（0.25 / 0.6 / 38 / 34 均未经真实用户与教练标定），
+        目前正在按标注数据重新标定；评分公式与扣分分值已按现场要求确定。
       </div>
     </div>
   )

@@ -105,7 +105,7 @@ check('总分 100（无扣分）', normal.score.overall === 100, `实际 ${norma
 
 const weakRange = classifyMotion(axisSamples(2400, 20, 0), 1)
 check('峰值 20 < min_peak 38 → 行程不足', weakRange.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'))
-check('行程不足单次扣 20', weakRange.score.overall === 80, `实际 ${weakRange.score.overall}`)
+check('行程不足单次扣 25', weakRange.score.overall === 75, `实际 ${weakRange.score.overall}`)
 
 check('扣分明细包含条目', Array.isArray(normal.score.deductions) && normal.score.deductions.length === 0)
 

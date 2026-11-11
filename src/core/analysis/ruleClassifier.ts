@@ -102,9 +102,9 @@ export const HIGH_RISK_CODES: ErrorCode[] = []
  *  - 五类全部命中合计扣 88 分，仍保留 12 分余地，不会直接归零。
  */
 export const ERROR_DEDUCTION: Record<string, number> = {
-  INSUFFICIENT_RANGE: 20,
+  INSUFFICIENT_RANGE: 25,
   NOT_VERTICAL: 10,
-  WRIST_FLIP: 10,
+  WRIST_FLIP: 15,
 }
 
 /**

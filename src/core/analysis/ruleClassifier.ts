@@ -35,6 +35,8 @@ export interface RuleScore {
   stability: number
   consistency: number
   overall: number
+  /** 扣分明细（扣分制的依据）；旧记录没有该字段，读取时按缺失处理 */
+  deductions?: { code: string; points: number }[]
 }
 
 export interface RuleResult {
@@ -82,6 +84,23 @@ export const ERROR_SEVERITY: Record<string, Severity> = {
 
 /** 高风险错误：命中后总分强制不高于 45，且教练建议强制降载 */
 export const HIGH_RISK_CODES: ErrorCode[] = ['INCOMPLETE_REPETITION']
+
+/**
+ * **扣分表**：每类错误命中一次扣多少分（扣分制评分的唯一依据）。
+ *
+ * 取值按严重度分档：high 最重、medium 次之、low 最轻。
+ * 注意：
+ *  - 同一次动作里同一类错误只存在一条（错误码是集合语义），所以这里扣的是"每类"；
+ *  - 高风险码另有 45 分封顶，扣分值不必大到破坏可读性；
+ *  - 五类全部命中合计扣 88 分，仍保留 12 分余地，不会直接归零。
+ */
+export const ERROR_DEDUCTION: Record<string, number> = {
+  INCOMPLETE_REPETITION: 35, // high
+  INSUFFICIENT_RANGE: 18, // medium
+  UNSTABLE_MOTION: 15, // medium
+  TEMPO_TOO_FAST: 12, // medium
+  TEMPO_TOO_SLOW: 8, // low
+}
 
 /**
  * 结束点角速度阈值 = min_peak × 0.35，**四舍五入到 1 位小数**。
@@ -160,6 +179,8 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   }
 
   const hasHigh = codes.some((c) => ERROR_META[c].severity === 'high')
+  // 四个维度分**保留为诊断信息**（报告里仍展示，便于解释分数构成），
+  // 但不再参与总分计算——总分改为下面的扣分制。
   const rangeOfMotion = Math.min(100, (peak / rule.minPeak) * 85)
   const tempo =
     durationMs >= THRESHOLDS.fastMs && durationMs <= THRESHOLDS.slowMs
@@ -167,7 +188,17 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
       : Math.max(0, 100 - Math.abs(durationMs - THRESHOLDS.tempoIdealMs) / 30)
   const stability = Math.max(0, 100 - stab * 5)
   const consistency = Math.max(0, 100 - codes.length * 15)
-  let overall = rangeOfMotion * 0.35 + tempo * 0.25 + stability * 0.25 + consistency * 0.15
+
+  // ================= 扣分制总分 =================
+  // 从 100 分起扣，每命中一类错误按其固定扣分扣除，下限 0。
+  // 相比原来的「四维加权」，扣分制的好处是**可解释**：
+  // 用户能直接看到"因为行程不足扣了 15 分"，而不是一个加权出来的抽象数字。
+  const deductions = codes.map((code) => ({
+    code,
+    points: ERROR_DEDUCTION[code] ?? 0,
+  }))
+  const totalDeduction = deductions.reduce((a, d) => a + d.points, 0)
+  let overall = Math.max(0, 100 - totalDeduction)
   if (hasHigh) overall = Math.min(overall, 45)
 
   return {
@@ -189,7 +220,7 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
       topDurationMs,
       endpointAngularVelocity: endpoint,
     },
-    score: { rangeOfMotion, tempo, stability, consistency, overall: Math.round(overall * 100) / 100 },
+    score: { rangeOfMotion, tempo, stability, consistency, overall: Math.round(overall * 100) / 100, deductions },
     phases: phaseRanges(durationMs),
   }
 }

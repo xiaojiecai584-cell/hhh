@@ -1,12 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useBleStore, CONDITION_LABEL, type LoggedEvent, type ManualLabel, type RecCondition } from '../store/useBleStore'
-import { useBleConfigStore } from '../store/useBleConfigStore'
-import { useBodyStore } from '../store/useBodyStore'
-import { ACTION_NAMES, START_MODE_LABEL } from '../core/protocol/types'
-import { ACTION_RULES, endpointThresholdFor } from '../core/analysis/ruleClassifier'
-import { resolveSegments } from '../core/body/bodyProfile'
-import { MOTION_TEMPLATES } from '../core/motion/templates'
-import { templateToImuTarget } from '../core/motion/imuMapping'
+import { useMemo, useState } from 'react'
+import { useBleStore } from '../store/useBleStore'
+import { ACTION_NAMES } from '../core/protocol/types'
 import {
   SAMPLE_CONDITION_LABEL,
   estimateStoreBytes,
@@ -20,88 +14,105 @@ const STATE_LABEL: Record<string, string> = {
   disconnected: '未连接',
 }
 
+/** 当前生效的三类错误（与 core/analysis/ruleClassifier.ts 的 ERROR_DEDUCTION 一致） */
 const ERROR_LABEL: Record<string, string> = {
-  INSUFFICIENT_RANGE: '行程不足',
-  NOT_VERTICAL: '行程不垂直',
-  WRIST_FLIP: '手腕外翻',
+  INSUFFICIENT_RANGE: '行程不足（−25）',
+  WRIST_FLIP: '手腕外翻（−15）',
+  NOT_VERTICAL: '行程不垂直（−10）',
 }
 const ERROR_CODES = Object.keys(ERROR_LABEL)
 
-/** 调试站专用：连接调试、BLE 地址、原始帧、录制标注。用户界面见 TrainingPage。 */
+/**
+ * 调试站 · 采集专用页面。
+ *
+ * 只保留这一轮需要的东西：连接设备 → 录制一段 → 人工填真实次数与错误类型
+ * → 提交到独立数据集（useSampleStore，key 为 lindoway-samples-v2）。
+ *
+ * 原来的 BLE 参数面板、原始帧监视、0x02 事件回传、指令日志、姿态显示、
+ * 旧的「整段/逐段 + 标注入库」流程都已移除——那些属于调试用途，
+ * 与本次重采无关，留着反而容易误操作。
+ */
 export default function ConnectPage() {
   const state = useBleStore((s) => s.state)
   const deviceName = useBleStore((s) => s.deviceName)
-  const latestPose = useBleStore((s) => s.latestPose)
-  const lastAck = useBleStore((s) => s.lastAck)
-  const events = useBleStore((s) => s.events)
-  const txLog = useBleStore((s) => s.txLog)
   const error = useBleStore((s) => s.error)
   const connect = useBleStore((s) => s.connect)
   const disconnect = useBleStore((s) => s.disconnect)
-  const sendStartAction = useBleStore((s) => s.sendStartAction)
-  const clearEvents = useBleStore((s) => s.clearEvents)
-  const rawRx = useBleStore((s) => s.rawRx)
-  const rxCounts = useBleStore((s) => s.rxCounts)
-  const clearRawRx = useBleStore((s) => s.clearRawRx)
   const recording = useBleStore((s) => s.recording)
   const recordingCount = useBleStore((s) => s.recordingCount)
-  const repCount = useBleStore((s) => s.repCount)
-  const repEvents = useBleStore((s) => s.repEvents)
-  const targetReps = useBleStore((s) => s.targetReps)
-  const setTargetReps = useBleStore((s) => s.setTargetReps)
-  const setActive = useBleStore((s) => s.setActive)
-  const sendStopAction = useBleStore((s) => s.sendStopAction)
-  const currentActionId = useBleStore((s) => s.currentActionId)
-  const pending = useBleStore((s) => s.pending)
   const startRecording = useBleStore((s) => s.startRecording)
   const stopRecording = useBleStore((s) => s.stopRecording)
-  const exportRawRecording = useBleStore((s) => s.exportRawRecording)
-  // 原始帧导出用的真值与工况（与标注流程的 trueReps/condition 分开，避免互相干扰）
-  const [rawTrueReps, setRawTrueReps] = useState(0)
-  const [rawCondition, setRawCondition] = useState<RecCondition>('normal')
-
-  // ---- 新一轮采集（坐姿推举重采）：独立存储 + 人工标注 ----
   const takeRawRecording = useBleStore((s) => s.takeRawRecording)
-  const newSamples = useSampleStore((s) => s.samples)
-  const addNewSample = useSampleStore((s) => s.addSample)
-  const clearNewSamples = useSampleStore((s) => s.clearSamples)
-  const storeBytes = useMemo(() => estimateStoreBytes(newSamples), [newSamples])
-  const [newReps, setNewReps] = useState(0)
-  const [newCondition, setNewCondition] = useState<SampleCondition>('normal')
-  const [newErrors, setNewErrors] = useState<string[]>([])
-  const [newNote, setNewNote] = useState('')
+  const currentActionId = useBleStore((s) => s.currentActionId)
 
-  const submitNewSample = () => {
+  const samples = useSampleStore((s) => s.samples)
+  const addSample = useSampleStore((s) => s.addSample)
+  const removeSample = useSampleStore((s) => s.removeSample)
+  const clearSamples = useSampleStore((s) => s.clearSamples)
+  const usedBytes = useMemo(() => estimateStoreBytes(samples), [samples])
+
+  const [busy, setBusy] = useState(false)
+  // 待标注的内容（提交后清空次数/错误/备注，工况保留以便连续采同一工况）
+  const [trueReps, setTrueReps] = useState(0)
+  const [condition, setCondition] = useState<SampleCondition>('normal')
+  const [errors, setErrors] = useState<string[]>([])
+  const [note, setNote] = useState('')
+  /** 已停止录制、等待标注提交的缓冲区是否存在 */
+  const [ready, setReady] = useState(false)
+
+  const isConnected = state === 'connected'
+
+  const doConnect = async () => {
+    setBusy(true)
+    try {
+      if (isConnected) await disconnect()
+      else await connect()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const doStart = () => {
+    startRecording()
+    setReady(false)
+  }
+
+  const doStop = () => {
+    stopRecording({ skipSegment: true }) // 整段保留，不做自动切段
+    setReady(true)
+  }
+
+  const doSubmit = () => {
     const raw = takeRawRecording()
     if (!raw) return
-    addNewSample({
+    addSample({
       id: `s-${Date.now().toString(36)}`,
       actionId: raw.actionId,
       actionName: raw.actionName,
-      condition: newCondition,
-      trueReps: newReps,
-      errorCodes: newErrors,
-      note: newNote,
+      condition,
+      trueReps,
+      errorCodes: errors,
+      note,
       samplingRateHz: raw.samplingRateHz,
       durationMs: raw.durationMs,
       frameCount: raw.frames.length,
       capturedAt: new Date().toISOString(),
       frames: raw.frames,
     })
-    // 提交后清空标注以便录入下一条，工况保留（同工况常连续采）
-    setNewReps(0)
-    setNewErrors([])
-    setNewNote('')
+    setTrueReps(0)
+    setErrors([])
+    setNote('')
+    setReady(false)
   }
 
-  const exportNewSamples = () => {
+  const doExport = () => {
     const payload = {
       version: 2,
       exportedAt: new Date().toISOString(),
       dataset: 'seated_shoulder_press_v2',
-      device: { name: useBleStore.getState().deviceName ?? 'unknown', placement: 'dumbbell' },
-      sampleCount: newSamples.length,
-      samples: newSamples,
+      device: { name: deviceName ?? 'unknown', placement: 'dumbbell' },
+      sampleCount: samples.length,
+      samples,
     }
     const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -111,574 +122,61 @@ export default function ConnectPage() {
     a.click()
     URL.revokeObjectURL(url)
   }
-  const submitSegments = useBleStore((s) => s.submitSegments)
-  const discardPending = useBleStore((s) => s.discardPending)
-  const profile = useBodyStore((s) => s.profile)
-  // 身体比例：下发给设备时要用它做与 3D 预览一致的地面接触解算
-  const seg = useMemo(() => resolveSegments(profile), [profile])
-  const bleConfig = useBleConfigStore((s) => s.config)
-  const setBleField = useBleConfigStore((s) => s.setField)
-  const resetBleConfig = useBleConfigStore((s) => s.reset)
-  const [busy, setBusy] = useState(false)
-  const [showBleConfig, setShowBleConfig] = useState(false)
-  const [segLabels, setSegLabels] = useState<Record<number, ManualLabel>>({})
-  const [deletedSegs, setDeletedSegs] = useState<Set<number>>(new Set())
-  // 标定采集：真实次数、工况、是否整段上传
-  const [trueReps, setTrueReps] = useState(0)
-  const [condition, setCondition] = useState<RecCondition>('normal')
-  const [recMode, setRecMode] = useState<'whole' | 'segmented'>('whole')
-  const sendingRef = useRef(false)
-
-  useEffect(() => {
-    setSegLabels({})
-    setDeletedSegs(new Set())
-  }, [pending])
-
-  const setSegStandard = (idx: number, standard: boolean) =>
-    setSegLabels((prev) => ({
-      ...prev,
-      [idx]: { standard, errorCodes: standard ? [] : (prev[idx]?.errorCodes ?? []) },
-    }))
-
-  const toggleSegError = (idx: number, code: string) =>
-    setSegLabels((prev) => {
-      const cur = prev[idx] ?? { standard: false, errorCodes: [] }
-      const codes = cur.errorCodes.includes(code)
-        ? cur.errorCodes.filter((c) => c !== code)
-        : [...cur.errorCodes, code]
-      return { ...prev, [idx]: { standard: false, errorCodes: codes } }
-    })
-
-  const toggleDeleted = (idx: number) =>
-    setDeletedSegs((prev) => {
-      const s = new Set(prev)
-      if (s.has(idx)) s.delete(idx)
-      else s.add(idx)
-      return s
-    })
-
-  const handleSubmit = async () => {
-    const p = pending
-    if (!p) return
-    const labels = p.segments.map((_, i) => (deletedSegs.has(i) ? null : (segLabels[i] ?? null)))
-    await submitSegments(labels, {
-      trueReps,
-      condition,
-      mode: recMode,
-      purpose: recMode === 'whole' ? 'counting_calibration' : 'error_calibration',
-    })
-    setSegLabels({})
-    setDeletedSegs(new Set())
-  }
-
-  const handleDiscard = () => {
-    discardPending()
-    setSegLabels({})
-    setDeletedSegs(new Set())
-  }
-
-  const isConnected = state === 'connected'
-
-  const startPreset = async (id: number) => {
-    if (sendingRef.current) return
-    const t = MOTION_TEMPLATES.find((t) => t.actionId === id)
-    if (!t) return
-    sendingRef.current = true
-    setBusy(true)
-    try {
-      await sendStartAction(templateToImuTarget(t, undefined, seg), `开始·${t.name} (0x82)`)
-    } finally {
-      sendingRef.current = false
-      setBusy(false)
-    }
-  }
-
-  const doConnect = async () => {
-    setBusy(true)
-    await connect()
-    setBusy(false)
-  }
-
-  const doDisconnect = async () => {
-    setBusy(true)
-    await disconnect()
-    setBusy(false)
-  }
 
   return (
     <div className="page">
+      {/* ---------- 设备连接 ---------- */}
       <div className="card">
         <div className="row">
-          <h3 className="card__title">BLE 参数（Web 蓝牙）</h3>
-          <button
-            className="btn btn--ghost"
-            style={{ padding: '6px 12px', fontSize: 12 }}
-            onClick={() => setShowBleConfig((v) => !v)}
-          >
-            {showBleConfig ? '收起' : '配置'}
-          </button>
+          <h3 className="card__title">设备</h3>
+          <span className="muted" style={{ fontSize: 12 }}>{STATE_LABEL[state] ?? state}</span>
         </div>
-        {showBleConfig && (
-          <>
-            <div className="field-grid" style={{ marginTop: 10 }}>
-              <label className="field">
-                <span className="field__label">服务 UUID</span>
-                <input
-                  className="input input--text"
-                  value={bleConfig.serviceUuid}
-                  onChange={(e) => setBleField('serviceUuid', e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field__label">写特征 UUID</span>
-                <input
-                  className="input input--text"
-                  value={bleConfig.writeUuid}
-                  onChange={(e) => setBleField('writeUuid', e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field__label">通知特征 UUID</span>
-                <input
-                  className="input input--text"
-                  value={bleConfig.notifyUuid}
-                  onChange={(e) => setBleField('notifyUuid', e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field__label">设备名称前缀（可选）</span>
-                <input
-                  className="input input--text"
-                  value={bleConfig.deviceNameFilter}
-                  onChange={(e) => setBleField('deviceNameFilter', e.target.value)}
-                />
-              </label>
-            </div>
-            <div className="field" style={{ marginTop: 12 }}>
-              <span className="field__label">设备筛选方式</span>
-              <div className="seg" style={{ marginTop: 6 }}>
-                <button
-                  type="button"
-                  className={`seg__btn${!bleConfig.acceptAllDevices ? ' seg__btn--active' : ''}`}
-                  onClick={() => setBleField('acceptAllDevices', false)}
-                >
-                  按 UUID 过滤
-                </button>
-                <button
-                  type="button"
-                  className={`seg__btn${bleConfig.acceptAllDevices ? ' seg__btn--active' : ''}`}
-                  onClick={() => setBleField('acceptAllDevices', true)}
-                >
-                  扫描全部
-                </button>
-              </div>
-            </div>
-            <p className="card__desc" style={{ marginTop: 8 }}>
-              支持短 UUID（如 ffe0 / ffe1），系统自动补全 128 位；改完参数后重新「连接」生效。
-            </p>
-            <button className="btn btn--ghost" style={{ marginTop: 8 }} onClick={resetBleConfig}>
-              恢复默认
-            </button>
-          </>
-        )}
+        <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>
+          {deviceName ?? '尚未连接（需 Chrome / Edge，且为 localhost 或 HTTPS）'}
+        </div>
+        <button className="btn" style={{ marginTop: 10, width: '100%' }} onClick={() => void doConnect()} disabled={busy}>
+          {isConnected ? '断开连接' : '连接设备'}
+        </button>
+        {error && <div className="train__hint" style={{ color: 'var(--danger)' }}>{error}</div>}
       </div>
 
+      {/* ---------- 录制 ---------- */}
       <div className="card">
         <div className="row">
-          <div>
-            <span className={`badge badge--${state}`}>{STATE_LABEL[state]}</span>
-            {deviceName && (
-              <div className="muted" style={{ marginTop: 6, fontSize: 13 }}>
-                {deviceName}
-              </div>
-            )}
-          </div>
-          {isConnected ? (
-            <button className="btn btn--ghost" onClick={doDisconnect} disabled={busy}>
-              断开
-            </button>
-          ) : (
-            <button className="btn" onClick={doConnect} disabled={busy || state === 'connecting'}>
-              {state === 'connecting' ? '连接中…' : '连接'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {error && <div className="error">{error}</div>}
-
-      {isConnected && (
-        <div className="card">
-          <div className="row">
-            <h3 className="card__title">指令下发</h3>
-            <span className="chip">
-              {setActive
-                ? `本组进行中 ${repCount} 次${targetReps > 0 ? `/${targetReps}` : ''}`
-                : '待机'}
-            </span>
-          </div>
-          <label className="field" style={{ marginTop: 10 }}>
-            <span className="field__label">本组目标次数（0 = 不限，需手动停止）</span>
-            <input
-              className="input"
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={999}
-              value={targetReps}
-              onChange={(e) => setTargetReps(Number(e.target.value))}
-            />
-          </label>
-          <div className="btn-grid" style={{ marginTop: 10 }}>
-            {MOTION_TEMPLATES.map((t) => (
-              <button
-                key={t.id}
-                className="btn btn--ghost"
-                onClick={() => startPreset(t.actionId)}
-                disabled={busy}
-              >
-                旧·下发 0x82·{t.name}
-              </button>
-            ))}
-          </div>
-          {setActive && (
-            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-              已识别 <b>{repCount}</b> 次{targetReps > 0 ? ` / 目标 ${targetReps} 次` : ''}
-              {targetReps > 0 && repCount >= targetReps ? ' —— 已达标，正在下发 0x83…' : ''}
-            </div>
-          )}
-          {repEvents.length > 0 && (
-            <div className="flag-row" style={{ marginTop: 10 }}>
-              {[...repEvents]
-                .slice(-6)
-                .reverse()
-                .map((e) => (
-                  <span className="chip" key={e.index}>
-                    #{e.index} {e.rangeDeg.toFixed(0)}° · {(e.durationMs / 1000).toFixed(1)}s
-                    {e.flags.wristFlip ? ' · 腕翻' : ''}
-                    {e.flags.shortRange ? ' · 幅度不足' : ''}
-                  </span>
-                ))}
-            </div>
-          )}
-          {setActive && (
-            <button className="btn btn--ghost" style={{ marginTop: 8, width: '100%' }} onClick={() => void sendStopAction()}>
-              停止采集（下发 0x83）
-            </button>
-          )}
-          {txLog.length > 0 && (
-            <div className="log-list" style={{ marginTop: 12 }}>
-              {[...txLog].reverse().map((t) => (
-                <div className="log-item" key={t.id}>
-                  <div className="log-item__head">
-                    <span>{t.label}</span>
-                    <span className="log-item__meta">{t.hex}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {latestPose && (
-        <div className="card">
-          <div className="row">
-            <h3 className="card__title">实时姿态（0x01 · 50Hz）</h3>
-            <span className="chip">
-              {latestPose.timestampMs === 0 ? '待机' : `${latestPose.timestampMs} ms`}
-            </span>
-          </div>
-          <div className="stat-grid" style={{ marginTop: 10 }}>
-            <PoseStat label="roll 横滚" value={`${latestPose.rollDeg.toFixed(2)}°`} />
-            <PoseStat label="pitch 俯仰" value={`${latestPose.pitchDeg.toFixed(2)}°`} />
-            <PoseStat label="yaw 偏航" value={`${latestPose.yawDeg.toFixed(2)}°`} />
-            <PoseStat label="az 加速度" value={`${latestPose.azG.toFixed(3)}g`} />
-            <PoseStat label="gx 角速度" value={`${latestPose.gxDps.toFixed(1)}°/s`} />
-            <PoseStat label="gy 角速度" value={`${latestPose.gyDps.toFixed(1)}°/s`} />
-            <PoseStat label="gz 角速度" value={`${latestPose.gzDps.toFixed(1)}°/s`} />
-            <PoseStat label="ax / ay" value={`${latestPose.axG.toFixed(3)} / ${latestPose.ayG.toFixed(3)}g`} />
-          </div>
-          {lastAck && (
-            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-              最近 ACK：动作 {ACTION_NAMES[lastAck.actionId] ?? lastAck.actionId}
-            </div>
-          )}
-        </div>
-      )}
-
-      {isConnected && (
-        <div className="card">
-          <div className="row">
-            <h3 className="card__title">动作录制与标注</h3>
-            <span className="chip">
-              {recording
-                ? `录制中 · ${recordingCount} 点`
-                : pending
-                  ? `${pending.actionName} · ${pending.segments.length} 段`
-                  : currentActionId
-                    ? ACTION_NAMES[currentActionId] ?? `动作${currentActionId}`
-                    : '未选动作'}
-            </span>
-          </div>
-
-          {pending ? (
-            <>
-              <p className="card__desc" style={{ marginTop: 8 }}>
-                {recMode === 'whole'
-                  ? '整段上传：不做切分，只报真实次数。'
-                  : `录制完成，自动切分成 ${pending.segments.length} 段。请逐段确认并标注（可删除切错的段）。`}
-              </p>
-
-              {/* 标定必需的人工真值：缺了它，这批数据无法用来定标 */}
-              <div className="field-grid" style={{ marginTop: 10 }}>
-                <label className="field">
-                  <span className="field__label">本段真实次数（人工数出来的）</span>
-                  <input
-                    className="input"
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    max={999}
-                    value={trueReps}
-                    onChange={(e) => setTrueReps(Number(e.target.value))}
-                  />
-                </label>
-              </div>
-              <div className="field" style={{ marginTop: 10 }}>
-                <span className="field__label">采集工况</span>
-                <div className="flag-row" style={{ marginTop: 6 }}>
-                  {(Object.keys(CONDITION_LABEL) as RecCondition[]).map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      className="chip chip--btn"
-                      style={condition === c ? { outline: '2px solid var(--accent)' } : undefined}
-                      onClick={() => setCondition(c)}
-                    >
-                      {CONDITION_LABEL[c]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <p className="card__desc" style={{ marginTop: 8 }}>
-                {recMode === 'whole'
-                  ? '整段上传用于标定计数：不做切分，只报真实次数，离线用同一段流验证计数器。'
-                  : '逐段标注用于标定错误阈值：一次录制只做一次动作，标注粒度天然对齐。'}
-              </p>
-
-              {pending.segments.length === 0 && recMode !== 'whole' && (
-                <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-                  未检测到有效动作（可能录制时设备未运动），请重新录制。
-                </div>
-              )}
-              {recMode !== 'whole' && pending.segments.length > 1 && (
-                <div className="error" style={{ marginTop: 8 }}>
-                  这次录到了 {pending.segments.length} 段，但「逐段（标定阈值）」要求一次录制只做一次动作。
-                  段数不等于 1 说明切分把多次并了、或把一次拆了，标注粒度会对不上——建议只保留一段，
-                  或者重录一次（做一次就停）。
-                </div>
-              )}
-              {recMode !== 'whole' &&
-                pending.segments.map((seg, idx) => {
-                const deleted = deletedSegs.has(idx)
-                if (deleted) return null
-                const label = segLabels[idx]
-                return (
-                  <div
-                    key={idx}
-                    style={{ marginTop: 10, padding: 10, border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8 }}
-                  >
-                    <div className="row">
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>
-                        段{idx + 1} · {seg.durationMs}ms · {seg.count} 点
-                      </span>
-                      <button
-                        className="btn btn--ghost"
-                        style={{ padding: '2px 8px', fontSize: 12 }}
-                        onClick={() => toggleDeleted(idx)}
-                      >
-                        删除
-                      </button>
-                    </div>
-
-                    {/* 实测特征 + 对应判据：标注要对着判据判，别凭感觉——
-                        上一批数据的「过慢」标签里没有一条时长真的超过 5 秒，
-                        就是因为标注时看不到判据 */}
-                    <div className="muted" style={{ fontSize: 11, marginTop: 6, lineHeight: 1.7 }}>
-                      实测：时长 <b>{seg.durationMs}ms</b>（{'>'}5000 才算过慢、{'<'}1000 才算过快）· 主轴{' '}
-                      {seg.axis} 峰值 <b>{seg.peak.toFixed(1)}°/s</b>（动作{currentActionId ?? 1} 需 ≥{' '}
-                      {ACTION_RULES[currentActionId ?? 1]?.minPeak ?? 38}°/s）· 稳定性残差{' '}
-                      <b>{seg.stabilityStd.toFixed(2)}</b>（{'>'}7.0 才算不稳定）· 结束点{' '}
-                      <b>{seg.endpoint.toFixed(1)}°/s</b>（{'>'}{' '}
-                      {endpointThresholdFor(ACTION_RULES[currentActionId ?? 1]?.minPeak ?? 38).toFixed(1)} 才算未完整）
-                    </div>
-                    <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                      规则判定：
-                      {seg.ruleCodes.length === 0 ? (
-                        <span style={{ color: 'var(--accent)' }}> 无错误</span>
-                      ) : (
-                        <span style={{ color: 'var(--warn)' }}>
-                          {' '}
-                          {seg.ruleCodes.map((c) => ERROR_LABEL[c] ?? c).join('、')}
-                        </span>
-                      )}
-                      <span style={{ color: 'var(--text-3)' }}> —— 参考它，但以你自己的判断为准</span>
-                    </div>
-                    <div className="seg" style={{ marginTop: 8 }}>
-                      <button
-                        type="button"
-                        className={`seg__btn${label?.standard === true ? ' seg__btn--active' : ''}`}
-                        onClick={() => setSegStandard(idx, true)}
-                      >
-                        标准
-                      </button>
-                      <button
-                        type="button"
-                        className={`seg__btn${label?.standard === false ? ' seg__btn--active' : ''}`}
-                        onClick={() => setSegStandard(idx, false)}
-                      >
-                        不标准
-                      </button>
-                    </div>
-                    {label?.standard === false && (
-                      <div className="flag-row" style={{ marginTop: 6 }}>
-                        {ERROR_CODES.map((code) => (
-                          <button
-                            key={code}
-                            type="button"
-                            className="chip chip--btn"
-                            style={label.errorCodes.includes(code) ? { outline: '2px solid var(--accent)' } : undefined}
-                            onClick={() => toggleSegError(idx, code)}
-                          >
-                            {ERROR_LABEL[code]}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-              <div className="btn-grid" style={{ marginTop: 12 }}>
-                <button className="btn btn--ghost" onClick={handleDiscard}>
-                  丢弃
-                </button>
-                <button className="btn" onClick={() => void handleSubmit()}>
-                  提交入库
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="card__desc" style={{ marginTop: 8 }}>
-                采集两种数据：**整段**（一次连续做一整组，用于标定计数）与 **逐段**（一次只做一次动作，
-                用于标定错误阈值并人工标注）。
-              </p>
-              <div className="field" style={{ marginTop: 6 }}>
-                <span className="field__label">上传方式</span>
-                <div className="seg" style={{ marginTop: 6 }}>
-                  <button
-                    type="button"
-                    className={`seg__btn${recMode === 'whole' ? ' seg__btn--active' : ''}`}
-                    onClick={() => setRecMode('whole')}
-                  >
-                    整段（标定计数）
-                  </button>
-                  <button
-                    type="button"
-                    className={`seg__btn${recMode === 'segmented' ? ' seg__btn--active' : ''}`}
-                    onClick={() => setRecMode('segmented')}
-                  >
-                    逐段（标定阈值）
-                  </button>
-                </div>
-              </div>
-              {recording && (
-                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                  采集中 · 已缓存 {recordingCount} 个采样点
-                </div>
-              )}
-              <div className="btn-grid" style={{ marginTop: 10 }}>
-                {recording ? (
-                  <button className="btn" onClick={() => stopRecording({ skipSegment: recMode === 'whole' })}>
-                    停止录制
-                  </button>
-                ) : (
-                  <button className="btn" onClick={startRecording}>
-                    开始录制
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-
-          {/*
-            原始帧导出：**必须放在三元之外**。
-            停止录制会设置 pending → 页面自动切到标注界面，若放在录制分支里，
-            按钮会随分支一起消失（现场表现就是"一停止录制导出按钮就没了"）。
-            recordBuffer 在停止录制后仍然保留（只有「开始录制」或「提交入库」才清空），
-            所以停止之后照样能导出。
-          */}
-          <div className="row" style={{ marginTop: 14, gap: 8, alignItems: 'flex-end' }}>
-            <label className="field" style={{ flex: 1 }}>
-              <span className="field__label">本段真实次数</span>
-              <input
-                className="input"
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={99}
-                value={rawTrueReps}
-                onChange={(e) => setRawTrueReps(Number(e.target.value))}
-              />
-            </label>
-            <label className="field" style={{ flex: 1 }}>
-              <span className="field__label">工况</span>
-              <select
-                className="input"
-                value={rawCondition}
-                onChange={(e) => setRawCondition(e.target.value as RecCondition)}
-              >
-                {Object.entries(CONDITION_LABEL).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <button
-            className="btn btn--ghost"
-            style={{ marginTop: 8, width: '100%' }}
-            onClick={() =>
-              exportRawRecording({
-                trueReps: rawTrueReps,
-                condition: rawCondition,
-                note: '哑铃竖直平移，两端停顿',
-              })
-            }
-          >
-            导出原始数据（JSON）
-          </button>
-          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            开始录制 → 做完动作 → 停止录制 → 填真实次数 → 点上面导出。
-            导出的是逐帧原始量，<b>不需要提交入库</b>，退出页面后缓冲区会丢失，请及时导出。
-          </div>
-        </div>
-      )}
-
-      {/* ================= 新一轮采集：坐姿推举重采（独立存储） ================= */}
-      <div className="card">
-        <div className="row">
-          <h3 className="card__title">新一轮采集 · 坐姿推举</h3>
+          <h3 className="card__title">录制</h3>
           <span className="muted" style={{ fontSize: 12 }}>
-            已存 {newSamples.length} 条 · 约 {Math.round(storeBytes / 1024)} KB
+            {currentActionId ? ACTION_NAMES[currentActionId] ?? `动作${currentActionId}` : '等待设备启动'}
           </span>
         </div>
         <p className="card__desc" style={{ marginTop: 6 }}>
-          独立存储（<code>lindoway-samples-v2</code>），与训练历史完全隔离。
-          流程：开始录制 → 做动作 → 停止录制 → 填真实次数 + 勾错误类型 → 提交到新库。
+          在**设备上**启动一组，做完动作后回到这里点「停止录制」，然后填写真实次数与错误类型。
         </p>
+        <div className="btn-grid" style={{ marginTop: 10 }}>
+          {recording ? (
+            <button className="btn" onClick={doStop}>停止录制</button>
+          ) : (
+            <button className="btn" onClick={doStart}>开始录制</button>
+          )}
+        </div>
+        {recording && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>采集中 · 已缓存 {recordingCount} 个采样点</div>
+        )}
+        {ready && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 6, color: 'var(--accent)' }}>
+            已停止，缓冲区里有一段数据待标注 → 填完下面提交
+          </div>
+        )}
+      </div>
+
+      {/* ---------- 标注与提交 ---------- */}
+      <div className="card">
+        <div className="row">
+          <h3 className="card__title">标注与提交</h3>
+          <span className="muted" style={{ fontSize: 12 }}>
+            已存 {samples.length} 条 · 约 {Math.round(usedBytes / 1024)} KB
+          </span>
+        </div>
+
         <div className="row" style={{ marginTop: 10, gap: 8, alignItems: 'flex-end' }}>
           <label className="field" style={{ flex: 1 }}>
             <span className="field__label">真实次数（人工数）</span>
@@ -688,39 +186,32 @@ export default function ConnectPage() {
               inputMode="numeric"
               min={0}
               max={99}
-              value={newReps}
-              onChange={(e) => setNewReps(Number(e.target.value))}
+              value={trueReps}
+              onChange={(e) => setTrueReps(Number(e.target.value))}
             />
           </label>
           <label className="field" style={{ flex: 1 }}>
             <span className="field__label">工况</span>
-            <select
-              className="input"
-              value={newCondition}
-              onChange={(e) => setNewCondition(e.target.value as SampleCondition)}
-            >
+            <select className="input" value={condition} onChange={(e) => setCondition(e.target.value as SampleCondition)}>
               {Object.entries(SAMPLE_CONDITION_LABEL).map(([k, v]) => (
-                <option key={k} value={k}>
-                  {v}
-                </option>
+                <option key={k} value={k}>{v}</option>
               ))}
             </select>
           </label>
         </div>
+
         <div style={{ marginTop: 10 }}>
           <span className="field__label">错误类型（可多选；都不勾 = 标准动作）</span>
           <div className="flag-row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
             {ERROR_CODES.map((code) => {
-              const on = newErrors.includes(code)
+              const on = errors.includes(code)
               return (
                 <button
                   key={code}
                   type="button"
                   className="chip chip--btn"
                   style={on ? { outline: '2px solid var(--accent)' } : undefined}
-                  onClick={() =>
-                    setNewErrors((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]))
-                  }
+                  onClick={() => setErrors((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]))}
                 >
                   {ERROR_LABEL[code]}
                 </button>
@@ -728,123 +219,60 @@ export default function ConnectPage() {
             })}
           </div>
         </div>
+
         <label className="field" style={{ marginTop: 10 }}>
           <span className="field__label">备注（可选）</span>
-          <input
-            className="input"
-            value={newNote}
-            placeholder="例如：第 5 次幅度明显不足"
-            onChange={(e) => setNewNote(e.target.value)}
-          />
+          <input className="input" value={note} placeholder="例如：第 5 次幅度明显不足" onChange={(e) => setNote(e.target.value)} />
         </label>
+
         <div className="btn-grid" style={{ marginTop: 10 }}>
-          <button className="btn" onClick={submitNewSample} disabled={recording}>
-            提交到新库
-          </button>
-          <button className="btn btn--ghost" onClick={exportNewSamples} disabled={!newSamples.length}>
-            导出新库（JSON）
-          </button>
+          <button className="btn" onClick={doSubmit} disabled={recording || !ready}>提交到新库</button>
+          <button className="btn btn--ghost" onClick={doExport} disabled={!samples.length}>导出新库（JSON）</button>
         </div>
-        {!!newSamples.length && (
-          <button
-            className="btn btn--ghost"
-            style={{ marginTop: 8, width: '100%' }}
-            onClick={() => {
-              if (window.confirm(`确定清空新库里的 ${newSamples.length} 条数据？不可恢复。`)) clearNewSamples()
-            }}
-          >
-            清空新库
-          </button>
-        )}
         <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-          提交会消耗当前录制缓冲区（同一段不会重复提交）。localStorage 上限约 5MB，
+          提交会取走当前缓冲区（同一段不会重复提交）。localStorage 上限约 5MB，
           采够一轮请先导出再清空。
         </div>
       </div>
 
-      <div className="card">
-        <div className="row">
-          <h3 className="card__title">事件回传（0x02）</h3>
-          <button
-            className="btn btn--ghost"
-            onClick={clearEvents}
-            style={{ padding: '6px 12px', fontSize: 12 }}
-          >
-            清空
-          </button>
-        </div>
-        {events.length === 0 ? (
-          <p className="card__desc" style={{ marginTop: 8 }}>
-            暂无事件。连接并「开始」后，设备回传的判姿事件会显示在这里。
-          </p>
-        ) : (
-          <div className="log-list" style={{ marginTop: 10 }}>
-            {[...events].reverse().map((e) => (
-              <EventItem key={e.id} e={e} />
-            ))}
+      {/* ---------- 已采集列表 ---------- */}
+      {!!samples.length && (
+        <div className="card">
+          <div className="row">
+            <h3 className="card__title">已采集</h3>
+            <button
+              className="btn btn--ghost"
+              style={{ padding: '6px 12px', fontSize: 12 }}
+              onClick={() => {
+                if (window.confirm(`确定清空 ${samples.length} 条？不可恢复。`)) clearSamples()
+              }}
+            >
+              清空
+            </button>
           </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="row">
-          <h3 className="card__title">调试 · 接收数据</h3>
-          <button
-            className="btn btn--ghost"
-            onClick={clearRawRx}
-            style={{ padding: '6px 12px', fontSize: 12 }}
-          >
-            清空
-          </button>
-        </div>
-        <div className="flag-row" style={{ marginTop: 8 }}>
-          <span className="chip">姿态 {rxCounts.pose}</span>
-          <span className="chip">事件 {rxCounts.event}</span>
-          <span className="chip">ACK {rxCounts.ack}</span>
-        </div>
-        {rawRx.length === 0 ? (
-          <p className="card__desc" style={{ marginTop: 8 }}>
-            暂无接收数据。连接设备后会实时显示原始帧（十六进制）。
-          </p>
-        ) : (
-          <div className="log-list" style={{ marginTop: 10, maxHeight: 360 }}>
-            {[...rawRx].reverse().map((e) => (
-              <div className="log-item" key={e.id}>
-                <div className="log-item__head">
-                  <span style={{ fontWeight: 600 }}>{e.typeLabel}</span>
-                  <span className="log-item__meta">{e.time}</span>
-                </div>
-                <div className="debug-hex">{e.hex}</div>
+          {samples.map((s) => (
+            <div key={s.id} className="log-item">
+              <div className="log-item__head">
+                <span style={{ fontWeight: 600 }}>
+                  {ACTION_NAMES[s.actionId] ?? s.actionName} · {SAMPLE_CONDITION_LABEL[s.condition]} · {s.trueReps} 次
+                </span>
+                <button
+                  className="btn btn--ghost"
+                  style={{ padding: '4px 10px', fontSize: 12 }}
+                  onClick={() => removeSample(s.id)}
+                >
+                  删除
+                </button>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function PoseStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="stat">
-      <div className="stat__value" style={{ fontSize: 16 }}>
-        {value}
-      </div>
-      <div className="stat__label">{label}</div>
-    </div>
-  )
-}
-
-function EventItem({ e }: { e: LoggedEvent }) {
-  return (
-    <div className="log-item">
-      <div className="log-item__head">
-        <span style={{ fontWeight: 600 }}>设备启动 · {START_MODE_LABEL[e.mode]}</span>
-        <span className="log-item__meta">{ACTION_NAMES[e.actionId] ?? `动作${e.actionId}`}</span>
-      </div>
-      <div className="muted" style={{ fontSize: 12 }}>
-        本组目标 {e.reps} 次（次数由设备菜单设置）
-      </div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                {(s.durationMs / 1000).toFixed(1)}s · {s.frameCount} 帧 · {s.samplingRateHz}Hz
+                {s.errorCodes.length ? ` · ${s.errorCodes.map((c) => ERROR_LABEL[c] ?? c).join('、')}` : ' · 无错误标注'}
+                {s.note ? ` · ${s.note}` : ''}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

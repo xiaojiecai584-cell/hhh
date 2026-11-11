@@ -7,6 +7,12 @@ import { ACTION_RULES, endpointThresholdFor } from '../core/analysis/ruleClassif
 import { resolveSegments } from '../core/body/bodyProfile'
 import { MOTION_TEMPLATES } from '../core/motion/templates'
 import { templateToImuTarget } from '../core/motion/imuMapping'
+import {
+  SAMPLE_CONDITION_LABEL,
+  estimateStoreBytes,
+  useSampleStore,
+  type SampleCondition,
+} from '../store/useSampleStore'
 
 const STATE_LABEL: Record<string, string> = {
   connected: '已连接',
@@ -55,6 +61,58 @@ export default function ConnectPage() {
   // 原始帧导出用的真值与工况（与标注流程的 trueReps/condition 分开，避免互相干扰）
   const [rawTrueReps, setRawTrueReps] = useState(0)
   const [rawCondition, setRawCondition] = useState<RecCondition>('normal')
+
+  // ---- 新一轮采集（坐姿推举重采）：独立存储 + 人工标注 ----
+  const takeRawRecording = useBleStore((s) => s.takeRawRecording)
+  const newSamples = useSampleStore((s) => s.samples)
+  const addNewSample = useSampleStore((s) => s.addSample)
+  const clearNewSamples = useSampleStore((s) => s.clearSamples)
+  const storeBytes = useMemo(() => estimateStoreBytes(newSamples), [newSamples])
+  const [newReps, setNewReps] = useState(0)
+  const [newCondition, setNewCondition] = useState<SampleCondition>('normal')
+  const [newErrors, setNewErrors] = useState<string[]>([])
+  const [newNote, setNewNote] = useState('')
+
+  const submitNewSample = () => {
+    const raw = takeRawRecording()
+    if (!raw) return
+    addNewSample({
+      id: `s-${Date.now().toString(36)}`,
+      actionId: raw.actionId,
+      actionName: raw.actionName,
+      condition: newCondition,
+      trueReps: newReps,
+      errorCodes: newErrors,
+      note: newNote,
+      samplingRateHz: raw.samplingRateHz,
+      durationMs: raw.durationMs,
+      frameCount: raw.frames.length,
+      capturedAt: new Date().toISOString(),
+      frames: raw.frames,
+    })
+    // 提交后清空标注以便录入下一条，工况保留（同工况常连续采）
+    setNewReps(0)
+    setNewErrors([])
+    setNewNote('')
+  }
+
+  const exportNewSamples = () => {
+    const payload = {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      dataset: 'seated_shoulder_press_v2',
+      device: { name: useBleStore.getState().deviceName ?? 'unknown', placement: 'dumbbell' },
+      sampleCount: newSamples.length,
+      samples: newSamples,
+    }
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `lindoway-samples-v2-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
   const submitSegments = useBleStore((s) => s.submitSegments)
   const discardPending = useBleStore((s) => s.discardPending)
   const profile = useBodyStore((s) => s.profile)
@@ -610,6 +668,101 @@ export default function ConnectPage() {
           </div>
         </div>
       )}
+
+      {/* ================= 新一轮采集：坐姿推举重采（独立存储） ================= */}
+      <div className="card">
+        <div className="row">
+          <h3 className="card__title">新一轮采集 · 坐姿推举</h3>
+          <span className="muted" style={{ fontSize: 12 }}>
+            已存 {newSamples.length} 条 · 约 {Math.round(storeBytes / 1024)} KB
+          </span>
+        </div>
+        <p className="card__desc" style={{ marginTop: 6 }}>
+          独立存储（<code>lindoway-samples-v2</code>），与训练历史完全隔离。
+          流程：开始录制 → 做动作 → 停止录制 → 填真实次数 + 勾错误类型 → 提交到新库。
+        </p>
+        <div className="row" style={{ marginTop: 10, gap: 8, alignItems: 'flex-end' }}>
+          <label className="field" style={{ flex: 1 }}>
+            <span className="field__label">真实次数（人工数）</span>
+            <input
+              className="input"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={99}
+              value={newReps}
+              onChange={(e) => setNewReps(Number(e.target.value))}
+            />
+          </label>
+          <label className="field" style={{ flex: 1 }}>
+            <span className="field__label">工况</span>
+            <select
+              className="input"
+              value={newCondition}
+              onChange={(e) => setNewCondition(e.target.value as SampleCondition)}
+            >
+              {Object.entries(SAMPLE_CONDITION_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <span className="field__label">错误类型（可多选；都不勾 = 标准动作）</span>
+          <div className="flag-row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+            {ERROR_CODES.map((code) => {
+              const on = newErrors.includes(code)
+              return (
+                <button
+                  key={code}
+                  type="button"
+                  className="chip chip--btn"
+                  style={on ? { outline: '2px solid var(--accent)' } : undefined}
+                  onClick={() =>
+                    setNewErrors((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]))
+                  }
+                >
+                  {ERROR_LABEL[code]}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        <label className="field" style={{ marginTop: 10 }}>
+          <span className="field__label">备注（可选）</span>
+          <input
+            className="input"
+            value={newNote}
+            placeholder="例如：第 5 次幅度明显不足"
+            onChange={(e) => setNewNote(e.target.value)}
+          />
+        </label>
+        <div className="btn-grid" style={{ marginTop: 10 }}>
+          <button className="btn" onClick={submitNewSample} disabled={recording}>
+            提交到新库
+          </button>
+          <button className="btn btn--ghost" onClick={exportNewSamples} disabled={!newSamples.length}>
+            导出新库（JSON）
+          </button>
+        </div>
+        {!!newSamples.length && (
+          <button
+            className="btn btn--ghost"
+            style={{ marginTop: 8, width: '100%' }}
+            onClick={() => {
+              if (window.confirm(`确定清空新库里的 ${newSamples.length} 条数据？不可恢复。`)) clearNewSamples()
+            }}
+          >
+            清空新库
+          </button>
+        )}
+        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+          提交会消耗当前录制缓冲区（同一段不会重复提交）。localStorage 上限约 5MB，
+          采够一轮请先导出再清空。
+        </div>
+      </div>
 
       <div className="card">
         <div className="row">

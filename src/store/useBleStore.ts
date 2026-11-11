@@ -119,6 +119,15 @@ export interface RecordMeta {
   purpose: 'counting_calibration' | 'error_calibration' | 'general'
 }
 
+/** 从录制缓冲区取出的原始数据（供新的标注提交流程使用） */
+export interface RawRecordingPayload {
+  actionId: number
+  actionName: string
+  samplingRateHz: number
+  durationMs: number
+  frames: { t: number; ax: number; ay: number; az: number; gx: number; gy: number; gz: number }[]
+}
+
 interface BleState {
   kind: TransportKind
   state: TransportState
@@ -166,6 +175,11 @@ interface BleState {
    * 标定计数与验证停顿判据都需要原始帧，而数据页的导出只含分析结果。
    */
   exportRawRecording: (meta?: { trueReps?: number; condition?: RecCondition; note?: string }) => void
+  /**
+   * 取走当前录制缓冲区（读取后清空），供新的标注提交流程使用，
+   * 保证同一段数据不会被重复提交。
+   */
+  takeRawRecording: () => RawRecordingPayload | null
   stopRecording: (opts?: { skipSegment?: boolean }) => void
   submitSegments: (labels: (ManualLabel | null)[], meta?: RecordMeta) => Promise<void>
   discardPending: () => void
@@ -512,6 +526,34 @@ export const useBleStore = create<BleState>((set) => ({
   setTargetReps: (n) => {
     targetRepsFlag = Math.max(0, Math.floor(n) || 0)
     set({ targetReps: targetRepsFlag })
+  },
+
+  takeRawRecording: (): RawRecordingPayload | null => {
+    const buf = recordBuffer
+    if (!buf.length) {
+      set({ error: '没有可提交的数据：请先「开始录制」再采集' })
+      return null
+    }
+    const actionId = useBleStore.getState().currentActionId ?? 1
+    const out = {
+      actionId,
+      actionName: ACTION_NAMES[actionId] ?? `动作${actionId}`,
+      samplingRateHz: Number(estimateSamplingRate(buf).toFixed(2)),
+      durationMs: Math.round(buf[buf.length - 1].t - buf[0].t),
+      frames: buf.map((s) => ({
+        t: Math.round(s.t),
+        ax: s.ax,
+        ay: s.ay,
+        az: s.az,
+        gx: s.gx,
+        gy: s.gy,
+        gz: s.gz,
+      })),
+    }
+    recordBuffer = []
+    segmentRanges = []
+    set({ pending: null, recordingCount: 0 })
+    return out
   },
 
   startRecording: () => {

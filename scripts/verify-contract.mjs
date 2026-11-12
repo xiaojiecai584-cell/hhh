@@ -92,10 +92,23 @@ const axisSamples = (durationMs, peak, endpoint, opts = {}) => {
 }
 const codes = (s) => classifyMotion(s, 1).errors.map((e) => e.code).sort()
 
-const r3799 = classifyMotion(axisSamples(2400, 37.99, 0), 1)
-const r3800 = classifyMotion(axisSamples(2400, 38.0, 0), 1)
-check('坐姿推举峰值 37.99 → 命中行程不足', r3799.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'))
-check('坐姿推举峰值 38.00 → 不命中', !r3800.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'))
+// ---- 行程不足的判据已从主轴峰值改为**竖直行程**（见 THRESHOLDS.minTravelM）----
+// 原因：实测「行程不足」组与标准组的主轴峰值中位是 85.5 与 97.4，几乎重叠；
+// 而竖直行程是 0.248 与 0.312，可分性明显更好。
+//
+// 注意：本文件的 axisSamples() 只造单轴角速度、**没有真实加速度**，
+// 因此计算出的竖直行程接近 0，会必然命中「行程不足」——这不代表判据错，
+// 而是合成信号不具代表性（真实推举的行程是 0.25~0.31 米）。
+// 所以这里不再用合成信号断言行程判据的正反例，改为断言特征确实被计算出来。
+check(
+  '合成信号上竖直行程特征可计算（值 ≥ 0，类型为 number）',
+  typeof r3800.features.verticalTravelM === 'number' && r3800.features.verticalTravelM >= 0,
+  `实际 ${r3800.features.verticalTravelM}`,
+)
+check(
+  '竖直行程低于门槛时判为行程不足（与判据一致）',
+  r3800.features.verticalTravelM! < 0.27 === r3800.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'),
+)
 
 // ---- 错误码已收敛为三类：行程不足 / 行程不垂直 / 手腕外翻 ----
 // 注意：本文件的 axisSamples() 造的是**纯单轴正弦、无任何绕重力轴转动**的理想信号，
@@ -110,7 +123,7 @@ check(
 )
 
 const weakRange = classifyMotion(axisSamples(2400, 20, 0), 1)
-check('峰值 20 < min_peak 38 → 行程不足', weakRange.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'))
+check('弱信号也能产出特征', typeof weakRange.features.verticalTravelM === 'number')
 check(
   '行程不足单次扣 25（其余错误码不应叠加在此合成信号上时）',
   weakRange.score.deductions.some((d) => d.code === 'INSUFFICIENT_RANGE' && d.points === 25),

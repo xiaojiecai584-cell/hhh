@@ -63,17 +63,23 @@ export const THRESHOLDS = {
   endpointRatio: 0.35,
   tempoIdealMs: 2400,
   /**
-   * 行程不垂直的判定：竖直方向运动能量占比 **低于** 该值即判为不垂直。
-   * 计算方式：把加速度按重力方向分解，`verticalRatio = var(a_vert) / (var(a_vert) + var(a_horiz))`。
-   * 0.6 是初值——标准推举应几乎全是竖直运动，占比接近 1；
-   * 待新一轮标注数据到位后按实测分布重新标定。
+   * 行程不垂直：竖直方向运动能量占比 **低于** 该值即判为不垂直。
+   * `verticalRatio = var(a_vert) / (var(a_vert) + var(a_horiz))`。
+   *
+   * 由 25 条标注数据初步标定：标准动作中位 0.380、标了不垂直的 3 条中位 0.190
+   * → 取两组中点 0.28（原值 0.6 会把全部 25 条都判成不垂直）。
+   * 正例仅 3 个，数据补齐后需重标。
    */
-  verticalRatio: 0.6,
+  verticalRatio: 0.28,
   /**
-   * 手腕外翻的判定：绕重力轴转动占转动路径的比例 **高于** 该值即判外翻。
-   * 沿用原先 twistRatioLimit 的 0.25。
+   * 手腕外翻：绕重力轴转动占转动路径的比例。
+   *
+   * **方向与最初假设相反**：标准动作中位 0.560、标了外翻的 2 条中位 0.349
+   * ——外翻时该值**下降**。比较由 `>` 改为 `<` 后，全量一致率 4% → 44%，
+   * WRIST_FLIP 的 F1 由 0 → 0.80。取两组中点 0.45。
+   * 正例仅 2 个，高度不确认，补数据后必须重估，可能还需换特征。
    */
-  twistRatio: 0.25,
+  twistRatio: 0.45,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {
@@ -230,8 +236,8 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   if (peak < rule.minPeak) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   if (verticalRatio < THRESHOLDS.verticalRatio) codes.push('NOT_VERTICAL')
-  // ③ 手腕外翻：绕重力轴的转动占转动路径的比例过高
-  if (twistRatio > THRESHOLDS.twistRatio) codes.push('WRIST_FLIP')
+  // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）
+  if (twistRatio < THRESHOLDS.twistRatio) codes.push('WRIST_FLIP')
 
   const hasHigh = codes.some((c) => ERROR_META[c].severity === 'high')
   // 四个维度分**保留为诊断信息**（报告里仍展示，便于解释分数构成），

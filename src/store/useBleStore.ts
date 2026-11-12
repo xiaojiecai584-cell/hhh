@@ -3,6 +3,7 @@ import type { BLETransport, TransportKind, TransportState } from '../core/ble/tr
 import { WebBluetoothTransport } from '../core/ble/webBluetooth'
 import { VirtualDeviceTransport } from '../core/ble/virtualDevice'
 import { useBleConfigStore } from './useBleConfigStore'
+import { auditFrames, type SampleAudit } from '../core/analysis/sampleAudit'
 import { encodeStartAction, encodeStopAction, toHex } from '../core/protocol/codec'
 import {
   ACTION_NAMES,
@@ -180,6 +181,8 @@ interface BleState {
    * 保证同一段数据不会被重复提交。
    */
   takeRawRecording: () => RawRecordingPayload | null
+  /** 只读地审计当前录制缓冲区（不清空），用于提交前提示这段录音是否可用 */
+  peekRecordingAudit: () => SampleAudit | null
   stopRecording: (opts?: { skipSegment?: boolean }) => void
   submitSegments: (labels: (ManualLabel | null)[], meta?: RecordMeta) => Promise<void>
   discardPending: () => void
@@ -526,6 +529,14 @@ export const useBleStore = create<BleState>((set) => ({
   setTargetReps: (n) => {
     targetRepsFlag = Math.max(0, Math.floor(n) || 0)
     set({ targetReps: targetRepsFlag })
+  },
+
+  peekRecordingAudit: (): SampleAudit | null => {
+    const buf = recordBuffer
+    if (buf.length < 32) return null
+    return auditFrames(
+      buf.map((s) => ({ t: s.t, ax: s.ax, ay: s.ay, az: s.az, gx: s.gx, gy: s.gy, gz: s.gz })),
+    )
   },
 
   takeRawRecording: (): RawRecordingPayload | null => {

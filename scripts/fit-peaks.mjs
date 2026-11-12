@@ -44,12 +44,13 @@ console.log(`\n完全正确 ${ok}/${data.length} = ${((ok / data.length) * 100).
 
 // ---- 网格 ----
 const GRID = []
-for (const signal of ['omega', 'accel'])
-  for (const smoothTauMs of [200, 350, 500])
-    for (const prominenceRatio of [0.5, 0.6, 0.7, 0.8])
+for (const signal of ['accel', 'omega'])
+  for (const smoothTauMs of [60, 120, 200, 350])
+    for (const prominenceRatio of [0.35, 0.5, 0.65])
       for (const minPeakRatio of [0.15, 0.25, 0.4])
-        for (const minPeakGapMs of [800, 1200, 1600, 2200])
-          GRID.push({ signal, smoothTauMs, prominenceRatio, minPeakRatio, minPeakGapMs })
+        for (const minPeakGapMs of [300, 600, 1000, 1500])
+          for (const adaptiveGap of [true, false])
+          GRID.push({ signal, smoothTauMs, prominenceRatio, minPeakRatio, minPeakGapMs, adaptiveGap })
 
 const table = GRID.map((g) => data.map((d) => countActivityPeaks(d.frames, g)))
 

@@ -59,6 +59,9 @@ export default function ConnectPage() {
   const [note, setNote] = useState('')
   /** 已停止录制、等待标注提交的缓冲区是否存在 */
   const [ready, setReady] = useState(false)
+  /** 停止录制后对这段录音做的有效性审计 */
+  const [audit, setAudit] = useState<ReturnType<typeof peekRecordingAudit>>(null)
+  const peekRecordingAudit = useBleStore((s) => s.peekRecordingAudit)
 
   const isConnected = state === 'connected'
 
@@ -79,6 +82,7 @@ export default function ConnectPage() {
 
   const doStop = () => {
     stopRecording({ skipSegment: true }) // 整段保留，不做自动切段
+    setAudit(peekRecordingAudit()) // 立刻审计这段录音是否可用（只读，不清缓冲）
     setReady(true)
   }
 
@@ -164,6 +168,33 @@ export default function ConnectPage() {
         {ready && (
           <div className="muted" style={{ fontSize: 12, marginTop: 6, color: 'var(--accent)' }}>
             已停止，缓冲区里有一段数据待标注 → 填完下面提交
+          </div>
+        )}
+        {ready && audit && (
+          <div
+            className="log-item"
+            style={{
+              marginTop: 8,
+              borderLeft: `3px solid ${audit.ok ? 'var(--ok, #16a34a)' : 'var(--danger, #dc2626)'}`,
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: 13 }}>
+              {audit.ok ? '✓ 录音可用' : '⚠ 这段录音可能无法用于计数标定'}
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              时长 {(audit.metrics.durationMs / 1000).toFixed(1)}s · {audit.metrics.frameCount} 帧 ·{' '}
+              {audit.metrics.samplingRateHz}Hz · 最大间隔 {audit.metrics.maxGapMs}ms
+            </div>
+            <div className="muted" style={{ fontSize: 12 }}>
+              |a_vert| p10 {audit.metrics.accelP10.toFixed(3)}g / p50 {audit.metrics.accelP50.toFixed(3)}g · |ω| p10{' '}
+              {audit.metrics.omegaP10.toFixed(0)} / p50 {audit.metrics.omegaP50.toFixed(0)} °/s ·{' '}
+              <b>静止占比 {(audit.metrics.restFraction * 100).toFixed(1)}%</b>
+            </div>
+            {audit.issues.map((msg) => (
+              <div key={msg} style={{ fontSize: 12, marginTop: 4, color: 'var(--danger, #dc2626)' }}>
+                · {msg}
+              </div>
+            ))}
           </div>
         )}
       </div>

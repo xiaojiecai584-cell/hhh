@@ -42,6 +42,19 @@ export interface PeakOptions {
   gapFloorMs: number
   /** 自适应间隔的上限（ms） */
   gapCapMs: number
+  /**
+   * **是否对"合并过度的段"做峰分裂**（默认开）。
+   *
+   * 依据：实测长组的误差是稳定的 −1~−3（20 次→17/18/19），而且次数越多偏得越狠，
+   * 说明是"相邻两次被合并成一个峰"而非随机抖动。
+   * 做法：若相邻两峰的间隔超过中位间隔的 splitRatio 倍，就在该区间内
+   * 用更低的突出度门槛找一个子峰插进去，直到没有可分裂的区间为止。
+   */
+  splitMerged: boolean
+  /** 触发分裂的间隔倍数（相对中位间隔） */
+  splitRatio: number
+  /** 分裂时子峰的最低突出度 = 该比例 × prominenceRatio */
+  splitProminenceScale: number
   /** 峰的最小高度（绝对下限，随信号单位） */
   absFloor: number
 }
@@ -56,6 +69,9 @@ export const DEFAULT_PEAK_OPTIONS: PeakOptions = {
   gapRatio: 0.35,
   gapFloorMs: 150,
   gapCapMs: 2500,
+  splitMerged: true,
+  splitRatio: 1.7,
+  splitProminenceScale: 0.5,
   absFloor: 6,
 }
 
@@ -159,7 +175,56 @@ export function detectActivityPeaks(
   gaps.sort((a, b) => a - b)
   const medianGap = gaps[Math.floor(gaps.length / 2)]
   const gap = Math.min(o.gapCapMs, Math.max(o.gapFloorMs, o.gapRatio * medianGap))
-  return applyGap(gap)
+  const kept0 = applyGap(gap)
+  if (!o.splitMerged) return kept0
+
+  // ---- 峰分裂：把"间隔异常宽"的区间再拆开 ----
+  // 相邻两峰间隔超过中位间隔的 splitRatio 倍，说明那里多半合并了两次动作。
+  // 在该区间内用更低的突出度门槛找子峰，插入后重新计算中位间隔，最多做 8 轮。
+  let kept = kept0
+  for (let iter = 0; iter < 8; iter++) {
+    if (kept.length < 3) break
+    const lags: number[] = []
+    for (let i = 1; i < kept.length; i++) lags.push(kept[i].tMs - kept[i - 1].tMs)
+    const lagSorted = [...lags].sort((a, b) => a - b)
+    const medLag = lagSorted[Math.floor(lagSorted.length / 2)]
+    if (!(medLag > 0)) break
+    // 找最宽的区间
+    let worstI = -1
+    let worst = 0
+    for (let i = 0; i < lags.length; i++) if (lags[i] > worst) { worst = lags[i]; worstI = i }
+    if (worstI < 0 || worst < o.splitRatio * medLag) break
+
+    const tA = kept[worstI].tMs
+    const tB = kept[worstI + 1].tMs
+    // 在 (tA, tB) 之间找包络上的最高局部极大值，要求突出度达到较低门槛
+    const minSubProm = o.prominenceRatio * o.splitProminenceScale
+    let bestI = -1
+    let bestVal = -Infinity
+    for (let i = 1; i < n - 1; i++) {
+      const t = samples[i].t
+      if (t <= tA || t >= tB) continue
+      if (!(env[i] > env[i - 1] && env[i] >= env[i + 1])) continue
+      const v = env[i]
+      if (v < minPeak) continue
+      let l = v
+      for (let k = i - 1; k >= 0; k--) { if (env[k] > v) break; l = Math.min(l, env[k]) }
+      let r = v
+      for (let k = i + 1; k < n; k++) { if (env[k] > v) break; r = Math.min(r, env[k]) }
+      const base = Math.max(l, r)
+      const prom = v > 0 ? (v - base) / v : 0
+      if (prom < minSubProm) continue
+      if (v > bestVal) { bestVal = v; bestI = i }
+    }
+    if (bestI < 0) break // 该区间内没有合格子峰，停止分裂
+    const sub: ActivityPeak = {
+      tMs: samples[bestI].t,
+      value: env[bestI],
+      prominence: 0,
+    }
+    kept = [...kept.slice(0, worstI + 1), sub, ...kept.slice(worstI + 1)]
+  }
+  return kept
 }
 
 export function countActivityPeaks(

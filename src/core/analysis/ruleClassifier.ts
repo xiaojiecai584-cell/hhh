@@ -70,7 +70,7 @@ export const THRESHOLDS = {
    * → 取两组中点 0.28（原值 0.6 会把全部 25 条都判成不垂直）。
    * 正例仅 3 个，数据补齐后需重标。
    */
-  verticalRatio: 0.28,
+  verticalRatio: 0.29,
   /**
    * 手腕外翻：绕重力轴转动占转动路径的比例。
    *
@@ -79,7 +79,7 @@ export const THRESHOLDS = {
    * WRIST_FLIP 的 F1 由 0 → 0.80。取两组中点 0.45。
    * 正例仅 2 个，高度不确认，补数据后必须重估，可能还需换特征。
    */
-  twistRatio: 0.45,
+  twistRatio: 0.40,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {

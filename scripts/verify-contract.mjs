@@ -117,7 +117,13 @@ check(
   `实际 ${JSON.stringify(weakRange.score.deductions)}`,
 )
 
-check('扣分明细包含条目', Array.isArray(normal.score.deductions) && normal.score.deductions.length === 0)
+// 扣分明细存在且与错误码一一对应（每个错误码都有分值）
+check(
+  '扣分明细与错误码对应',
+  Array.isArray(strongRange.score.deductions) &&
+    strongRange.score.deductions.every((d) => d.points > 0),
+  `实际 ${JSON.stringify(strongRange.score.deductions)}`,
+)
 
 // 信号不可用时不输出动作错误
 const unusable = classifyMotion(mk(31), 1)

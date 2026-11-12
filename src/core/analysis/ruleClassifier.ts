@@ -90,9 +90,9 @@ export const THRESHOLDS = {
    * 主轴峰值中位分别是 85.5 与 97.4，几乎重叠——哑铃做推举是竖直平移，
    * 角速度不携带行程信息。
    *
-   * 0.12 是初值，待 55 条数据的分组统计出来后校正。
+   * 门槛按**逐次切片**实测定标（每次切片 2~3 秒，与整段统计不可混用）：`n   *   标准组 251 次切片 p10 0.132 / p50 0.178 / p90 0.305`n   *   行程不足 97 次切片 p10 0.091 / p50 0.138 / p90 0.241`n   * 取 0.12（低于标准组 p10），**优先保证不误报**——宁可漏掉部分行程不足，`n   * 也不要把标准动作判成不足。
    */
-  minTravelM: 0.27,
+  minTravelM: 0.12,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {
@@ -221,32 +221,42 @@ function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twi
       aV[i] = ((a.x * g.x + a.y * g.y + a.z * g.z) / gm - 1) * 9.80665
     }
   }
-  // 一次积分得速度，再去掉 1 秒滑动均值（高通）抑制漂移
+  /**
+   * 线性去趋势：`arr[i] - (a + b·i)`（最小二乘）。
+   *
+   * 为什么不沿用"减去滑动均值"：那是给**整段 40~60 秒**录音设计的，
+   * 窗口 1~2 秒只去掉慢漂移、保留 3 秒级的往复。
+   * 但本函数现在处理的是**逐次切片（2~3 秒）**——高通窗比切片还长，
+   * 会把真实行程一并减掉，导致每次的行程都接近 0、全部误判为「行程不足」。
+   * 短切片用线性去趋势才合适：只去掉直流与线性漂移，完整保留往复振幅。
+   */
+  const detrend = (arr: number[]): number[] => {
+    const n3 = arr.length
+    if (n3 < 3) return arr.slice()
+    let si = 0
+    let sy = 0
+    let sii = 0
+    let siy = 0
+    for (let i = 0; i < n3; i++) {
+      si += i
+      sy += arr[i]
+      sii += i * i
+      siy += i * arr[i]
+    }
+    const denom = n3 * sii - si * si
+    const b = denom !== 0 ? (n3 * siy - si * sy) / denom : 0
+    const a = (sy - b * si) / n3
+    return arr.map((v, i) => v - (a + b * i))
+  }
+
+  // 一次积分得速度，再去掉线性趋势
   const v = new Array<number>(n2).fill(0)
   for (let i = 1; i < n2; i++) v[i] = v[i - 1] + ((aV[i] + aV[i - 1]) / 2) * dt
-  const winV = Math.max(2, Math.round(1.0 / Math.max(dt, 1e-3)))
-  const vHP = v.map((_, i) => {
-    let s = 0
-    let c = 0
-    for (let k = Math.max(0, i - winV); k <= Math.min(n2 - 1, i + winV); k++) {
-      s += v[k]
-      c++
-    }
-    return v[i] - s / c
-  })
-  // 二次积分得位移，再去掉 2 秒滑动均值
+  const vHP = detrend(v)
+  // 二次积分得位移，再去掉线性趋势
   const x = new Array<number>(n2).fill(0)
   for (let i = 1; i < n2; i++) x[i] = x[i - 1] + ((vHP[i] + vHP[i - 1]) / 2) * dt
-  const winX = Math.max(2, Math.round(2.0 / Math.max(dt, 1e-3)))
-  const xHP = x.map((_, i) => {
-    let s = 0
-    let c = 0
-    for (let k = Math.max(0, i - winX); k <= Math.min(n2 - 1, i + winX); k++) {
-      s += x[k]
-      c++
-    }
-    return x[i] - s / c
-  })
+  const xHP = detrend(x)
   const sx = [...xHP].sort((a, b) => a - b)
   const q = (p: number) => sx[Math.min(sx.length - 1, Math.floor(p * (sx.length - 1)))] || 0
   const travel = q(0.95) - q(0.05)

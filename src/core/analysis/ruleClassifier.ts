@@ -82,7 +82,7 @@ export const THRESHOLDS = {
    * WRIST_FLIP 的 F1 由 0 → 0.80。取两组中点 0.45。
    * 正例仅 2 个，高度不确认，补数据后必须重估，可能还需换特征。
    */
-  twistRatio: 0.40,
+  twistRatio: 0.45,
   /**
    * 竖直行程下限（米）。低于它判为「行程不足」。
    *
@@ -92,7 +92,7 @@ export const THRESHOLDS = {
    *
    * 门槛按**逐次切片**实测定标（每次切片 2~3 秒，与整段统计不可混用）：`n   *   标准组 251 次切片 p10 0.132 / p50 0.178 / p90 0.305`n   *   行程不足 97 次切片 p10 0.091 / p50 0.138 / p90 0.241`n   * 取 0.12（低于标准组 p10），**优先保证不误报**——宁可漏掉部分行程不足，`n   * 也不要把标准动作判成不足。
    */
-  minTravelM: 0.12,
+  minTravelM: 0.10,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {

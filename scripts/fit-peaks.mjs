@@ -17,13 +17,26 @@ const server = await createServer({
   logLevel: 'error',
 })
 const { countActivityPeaks } = await server.ssrLoadModule('/src/core/analysis/peakCounter.ts')
+const { auditFrames } = await server.ssrLoadModule('/src/core/analysis/sampleAudit.ts')
 
-const data = raw.map((s) => ({
+const allData = raw.map((s) => ({
   s,
   frames: s.frames.map((f) => ({ t: f.t, ax: f.ax, ay: f.ay, az: f.az, gx: f.gx, gy: f.gy, gz: f.gz })),
 }))
 
-console.log(`样本 ${data.length} 条\n`)
+// 先排除"误差过大"的那批：用录音审计筛掉没有静止期的样本——
+// 这些录音里两次动作之间没回到静止，物理上不存在可切分的重复单元，
+// 把它们纳入参数拟合只会把阈值拉偏。
+const excluded = []
+const data = allData.filter((d, i) => {
+  const a = auditFrames(d.frames)
+  if (!a.ok) excluded.push({ idx: i + 1, cond: d.s.condition, reps: d.s.trueReps, issue: a.issues[0] })
+  return a.ok
+})
+console.log(`\n=== 录音审计：可用 ${data.length}/${allData.length} 条 ===`)
+for (const e of excluded) console.log(`  排除 #${String(e.idx).padStart(2)}  ${e.cond} ${e.reps}次  ${e.issue}`)
+
+console.log(`\n样本 ${data.length} 条\n`)
 
 const BASE = {}
 console.log('=== 逐条（当前默认参数）===')

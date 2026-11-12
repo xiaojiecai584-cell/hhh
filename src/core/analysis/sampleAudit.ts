@@ -105,6 +105,13 @@ export function auditFrames(frames: { t: number; ax: number; ay: number; az: num
         `说明动作之间没有回到静止，这类录音数不出次数，建议放慢节奏重采`,
     )
   }
+  if (metrics.accelP50 > 0.25) {
+    issues.push(
+      `中位加速度偏高（${metrics.accelP50.toFixed(2)}g，正常约 0.03~0.15g）——` +
+        `说明整段处于连续高强度运动，动作之间没有回到静止；实测这类录音在任何参数下都数不出次数` +
+        `（0.7 秒/次时信号里不存在可分辨的重复单元），建议放慢到 1.5 秒/次以上重采`,
+    )
+  }
   if (metrics.accelP10 > 0.25) issues.push(`加速度基线偏高（p10 ${metrics.accelP10.toFixed(2)}g）——可能整段都在晃动`)
 
   return { ok: issues.length === 0, issues, metrics }

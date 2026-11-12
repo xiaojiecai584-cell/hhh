@@ -198,7 +198,9 @@ let recordBuffer: SensorSample[] = []
 let segmentRanges: SegmentRange[] = []
 let recordingFlag = false
 let targetRepsFlag = 0 // 本组目标次数（0 = 不限）
-let autoStopping = false // 防止自动停止重入
+let autoStopping = false
+/** 上一次用峰值算法重算实时次数的时间戳（ms），用于节流 */
+let lastPeakT = 0 // 防止自动停止重入
 // 本组计数器：在线、单调、只依赖已发生的样本（为什么不能用 segmentMotion 见 repCounter.ts）
 let repCounter = new RepCounter()
 let countActive = false
@@ -246,6 +248,28 @@ function attach(t: BLETransport) {
           sampleRing.push(sample)
           if (sampleRing.length > SAMPLE_RING_MAX) sampleRing.splice(0, sampleRing.length - SAMPLE_RING_MAX)
           const ev = repCounter.push(sample)
+
+          // ================= 坐姿推举：实时用峰值算法重算次数 =================
+          // 为什么必须实时重算：旧的停顿半计数在真实数据上几乎数不出来（0% 正确），
+          // 若只在组结束时用峰值算法重算，会出现"组内数字冻结 → 结束时突然跳到真实次数"，
+          // 而且**自动停止永远不触发**（实时值到不了目标），用户会一直做下去。
+          // 现场实测过一次：目标 10 次、实际 23 次、用时 61 秒，就是这个原因。
+          if (sample.t - lastPeakT >= 500) {
+            lastPeakT = sample.t
+            const aid = useBleStore.getState().currentActionId ?? 1
+            if (aid === 1 && sampleRing.length >= 64) {
+              const peaks = detectActivityPeaks(sampleRing)
+              if (peaks.length > 0) {
+                useBleStore.setState({ repCount: peaks.length })
+                if (!autoStopping && targetRepsFlag > 0 && peaks.length >= targetRepsFlag) {
+                  autoStopping = true
+                  void useBleStore.getState().sendStopAction(`达标 ${targetRepsFlag} 次 · 停止采集 (0x83)`)
+                  if (useBleStore.getState().recording) useBleStore.getState().stopRecording()
+                }
+              }
+            }
+          }
+
           if (ev) {
             const count = repCounter.repCount
             // 切出这一次重复的原始样本（时间戳落在 [startMs, endMs] 内），供动作分析使用

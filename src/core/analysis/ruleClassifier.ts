@@ -27,6 +27,9 @@ export interface RuleFeatures {
   energy: number
   topDurationMs: number
   endpointAngularVelocity: number
+  verticalTravelM?: number
+  verticalRatio?: number
+  twistRatio?: number
 }
 
 export interface RuleScore {
@@ -80,6 +83,16 @@ export const THRESHOLDS = {
    * 正例仅 2 个，高度不确认，补数据后必须重估，可能还需换特征。
    */
   twistRatio: 0.40,
+  /**
+   * 竖直行程下限（米）。低于它判为「行程不足」。
+   *
+   * 为什么改用行程而不是主轴角速度峰值：实测「行程不足」组与标准组的
+   * 主轴峰值中位分别是 85.5 与 97.4，几乎重叠——哑铃做推举是竖直平移，
+   * 角速度不携带行程信息。
+   *
+   * 0.12 是初值，待 55 条数据的分组统计出来后校正。
+   */
+  minTravelM: 0.27,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {
@@ -158,7 +171,7 @@ function stabilityStd(mainAxis: number[]): number {
  * 重力方向用一阶低通估计（τ≈1s，与 repCounter 里同一套做法），
  * 只用到加速度与角速度，不依赖固件姿态解算。
  */
-function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twistRatio: number } {
+function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twistRatio: number; travel: number } {
   let g: { x: number; y: number; z: number } | null = null
   let vEnergy = 0
   let hEnergy = 0
@@ -187,9 +200,61 @@ function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twi
     totalPath += wmag
   }
   const denom = vEnergy + hEnergy
+
+  // ---- 竖直行程（米）：由竖直加速度两次积分得到，两级高通抑制漂移 ----
+  // 为什么不用主轴角速度峰值：实测「行程不足」组与标准组的 peak 中位是 85.5 与 97.4，
+  // 几乎重叠——因为哑铃做推举是竖直平移，角速度不代表行程。
+  const dt = samples.length > 1 ? (samples[samples.length - 1].t - samples[0].t) / 1000 / (samples.length - 1) : 0.02
+  const n2 = samples.length
+  const aV = new Array<number>(n2)
+  {
+    let g: { x: number; y: number; z: number } | null = null
+    for (let i = 0; i < n2; i++) {
+      const a = { x: samples[i].ax, y: samples[i].ay, z: samples[i].az }
+      if (!g) g = { ...a }
+      else {
+        const dti = i > 0 ? Math.max(1e-3, (samples[i].t - samples[i - 1].t) / 1000) : 0.02
+        const k = 1 - Math.exp(-dti / 1.0)
+        g = { x: g.x + (a.x - g.x) * k, y: g.y + (a.y - g.y) * k, z: g.z + (a.z - g.z) * k }
+      }
+      const gm = Math.hypot(g.x, g.y, g.z) || 1
+      aV[i] = ((a.x * g.x + a.y * g.y + a.z * g.z) / gm - 1) * 9.80665
+    }
+  }
+  // 一次积分得速度，再去掉 1 秒滑动均值（高通）抑制漂移
+  const v = new Array<number>(n2).fill(0)
+  for (let i = 1; i < n2; i++) v[i] = v[i - 1] + ((aV[i] + aV[i - 1]) / 2) * dt
+  const winV = Math.max(2, Math.round(1.0 / Math.max(dt, 1e-3)))
+  const vHP = v.map((_, i) => {
+    let s = 0
+    let c = 0
+    for (let k = Math.max(0, i - winV); k <= Math.min(n2 - 1, i + winV); k++) {
+      s += v[k]
+      c++
+    }
+    return v[i] - s / c
+  })
+  // 二次积分得位移，再去掉 2 秒滑动均值
+  const x = new Array<number>(n2).fill(0)
+  for (let i = 1; i < n2; i++) x[i] = x[i - 1] + ((vHP[i] + vHP[i - 1]) / 2) * dt
+  const winX = Math.max(2, Math.round(2.0 / Math.max(dt, 1e-3)))
+  const xHP = x.map((_, i) => {
+    let s = 0
+    let c = 0
+    for (let k = Math.max(0, i - winX); k <= Math.min(n2 - 1, i + winX); k++) {
+      s += x[k]
+      c++
+    }
+    return x[i] - s / c
+  })
+  const sx = [...xHP].sort((a, b) => a - b)
+  const q = (p: number) => sx[Math.min(sx.length - 1, Math.floor(p * (sx.length - 1)))] || 0
+  const travel = q(0.95) - q(0.05)
+
   return {
     verticalRatio: denom > 0 ? vEnergy / denom : 1,
     twistRatio: totalPath > 0 ? twistPath / totalPath : 0,
+    travel,
   }
 }
 
@@ -229,11 +294,12 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   // 竖直：把加速度按重力方向分解，取"沿重力方向的动态能量"占全部动态能量的比例；
   //       标准推举几乎全是竖直运动，占比接近 1；横着甩会明显下降。
   // 外翻：绕重力轴的转动量占转动路径的比例；哑铃被手腕拧动时该值升高。
-  const { verticalRatio, twistRatio } = verticalAndTwist(samples)
+  const { verticalRatio, twistRatio, travel } = verticalAndTwist(samples)
 
   const codes: ErrorCode[] = []
   // ① 行程不足：主轴峰值低于该动作的 min_peak
-  if (peak < rule.minPeak) codes.push('INSUFFICIENT_RANGE')
+  // 行程不足改用竖直行程判定（角度峰值与行程无关，实测两组重叠）
+  if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   if (verticalRatio < THRESHOLDS.verticalRatio) codes.push('NOT_VERTICAL')
   // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）
@@ -280,6 +346,12 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
       energy,
       topDurationMs,
       endpointAngularVelocity: endpoint,
+      /** 竖直行程（米）——行程不足的判据，也便于标定时取分布 */
+      verticalTravelM: travel,
+      /** 竖直方向动态能量占比 */
+      verticalRatio,
+      /** 绕重力轴转动占转动路径的比例 */
+      twistRatio,
     },
     score: { rangeOfMotion, tempo, stability, consistency, overall: Math.round(overall * 100) / 100, deductions },
     phases: phaseRanges(durationMs),

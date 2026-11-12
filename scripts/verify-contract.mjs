@@ -107,7 +107,7 @@ check(
 )
 check(
   '竖直行程低于门槛时判为行程不足（与判据一致）',
-  r3800.features.verticalTravelM! < 0.27 === r3800.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'),
+  (r3800.features.verticalTravelM ?? 0) < 0.27 === r3800.errors.some((e) => e.code === 'INSUFFICIENT_RANGE'),
 )
 
 // ---- 错误码已收敛为三类：行程不足 / 行程不垂直 / 手腕外翻 ----

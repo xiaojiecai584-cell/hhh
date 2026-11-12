@@ -4,7 +4,6 @@ import { WebBluetoothTransport } from '../core/ble/webBluetooth'
 import { VirtualDeviceTransport } from '../core/ble/virtualDevice'
 import { useBleConfigStore } from './useBleConfigStore'
 import { auditFrames, type SampleAudit } from '../core/analysis/sampleAudit'
-import { detectActivityPeaks } from '../core/analysis/peakCounter'
 import { encodeStartAction, encodeStopAction, toHex } from '../core/protocol/codec'
 import {
   ACTION_NAMES,
@@ -200,7 +199,6 @@ let recordingFlag = false
 let targetRepsFlag = 0 // 本组目标次数（0 = 不限）
 let autoStopping = false
 /** 上一次用峰值算法重算实时次数的时间戳（ms），用于节流 */
-let lastPeakT = 0 // 防止自动停止重入
 // 本组计数器：在线、单调、只依赖已发生的样本（为什么不能用 segmentMotion 见 repCounter.ts）
 let repCounter = new RepCounter()
 let countActive = false
@@ -248,28 +246,6 @@ function attach(t: BLETransport) {
           sampleRing.push(sample)
           if (sampleRing.length > SAMPLE_RING_MAX) sampleRing.splice(0, sampleRing.length - SAMPLE_RING_MAX)
           const ev = repCounter.push(sample)
-
-          // ================= 坐姿推举：实时用峰值算法重算次数 =================
-          // 为什么必须实时重算：旧的停顿半计数在真实数据上几乎数不出来（0% 正确），
-          // 若只在组结束时用峰值算法重算，会出现"组内数字冻结 → 结束时突然跳到真实次数"，
-          // 而且**自动停止永远不触发**（实时值到不了目标），用户会一直做下去。
-          // 现场实测过一次：目标 10 次、实际 23 次、用时 61 秒，就是这个原因。
-          if (sample.t - lastPeakT >= 500) {
-            lastPeakT = sample.t
-            const aid = useBleStore.getState().currentActionId ?? 1
-            if (aid === 1 && sampleRing.length >= 64) {
-              const peaks = detectActivityPeaks(sampleRing)
-              if (peaks.length > 0) {
-                useBleStore.setState({ repCount: peaks.length })
-                if (!autoStopping && targetRepsFlag > 0 && peaks.length >= targetRepsFlag) {
-                  autoStopping = true
-                  void useBleStore.getState().sendStopAction(`达标 ${targetRepsFlag} 次 · 停止采集 (0x83)`)
-                  if (useBleStore.getState().recording) useBleStore.getState().stopRecording()
-                }
-              }
-            }
-          }
-
           if (ev) {
             const count = repCounter.repCount
             // 切出这一次重复的原始样本（时间戳落在 [startMs, endMs] 内），供动作分析使用
@@ -471,20 +447,13 @@ export const useBleStore = create<BleState>((set) => ({
     autoStopping = false
     set({ setActive: false })
 
-    // ================= 最终次数改用峰值算法重算（仅坐姿推举）=================
-    // 为什么结束时批量重算而不是在线增量：
-    //  · 峰值/突出度检测天然是批处理（要整段才能估出本组节奏、做峰分裂）
-    //  · 用户真正在意的是这一组数出多少，中途显示允许稍有出入
-    // 实测（50 条通过录音审计的样本）：旧的停顿半计数 0% 正确、平均误差 9.6 次；
-    // 峰值算法 46% 完全正确、平均误差 1.4 次。
-    // 站姿侧平举不适用（旋转动作），保持原算法。
-    {
-      const aid0 = useBleStore.getState().currentActionId ?? 1
-      if (aid0 === 1 && fullFrames.length >= 32) {
-        const peaks = detectActivityPeaks(fullFrames)
-        if (peaks.length > 0) set({ repCount: peaks.length })
-      }
-    }
+    // 峰值算法的最终重算已回退：现场实测它在真实数据上严重多计
+    // （实际 2~3 次 → 数出 10 次，3~5 倍），且与报告的逐次明细（来自 repCounter）
+    // 不一致——APP 显示 10 次而报告只有 2 条明细。
+    // 离线评估得到的 46% 是在标注数据上、且带峰分裂的参数下测的，
+    // 实时滑动窗口与整组直接套用时并不成立，不能据此上线。
+    // 算法本体保留在 core/analysis/peakCounter.ts，待重新标定后再评估。
+    void fullFrames
 
     // 结束即出报告：快照本组，然后自动分析并存入历史（不再依赖用户去报告页手动点）
     const st = useBleStore.getState()

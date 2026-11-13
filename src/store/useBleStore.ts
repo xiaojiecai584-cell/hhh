@@ -283,11 +283,16 @@ function attach(t: BLETransport) {
             const count = repCounter.repCount
             // 切出这一次重复的原始样本（时间戳落在 [startMs, endMs] 内），供动作分析使用
             const reps = sampleRing.filter((x) => x.t >= ev.startMs && x.t <= ev.endMs)
+            // ⚠️ 坐姿推举的次数由上面的「位移周期」负责，旧停顿计数**不得写 repCount**：
+            // 它的值远低于位移计数（例如 3 vs 10），一旦写入数字就会突然变小；
+            // 而"只增不减"的守卫又拒绝把它恢复回去，于是卡在低值不动。
+            // 其它动作没有位移计数，仍由旧算法写。
+            const aidNow = useBleStore.getState().currentActionId ?? 1
             useBleStore.setState((s) => ({
-              repCount: count,
+              ...(aidNow === 1 ? {} : { repCount: count }),
               repEvents: [...s.repEvents, { ...ev, samples: reps }].slice(-200),
             }))
-            if (!autoStopping && targetRepsFlag > 0 && count >= targetRepsFlag) {
+            if (aidNow !== 1 && !autoStopping && targetRepsFlag > 0 && count >= targetRepsFlag) {
               autoStopping = true
               void useBleStore.getState().sendStopAction(`达标 ${targetRepsFlag} 次 · 停止采集 (0x83)`)
               // 若正在录制，同时结束录制，便于对这批数据做标注

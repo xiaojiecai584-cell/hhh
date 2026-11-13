@@ -85,8 +85,6 @@ export const THRESHOLDS = {
    * 正例仅 2 个，高度不确认，补数据后必须重估，可能还需换特征。
    */
   twistRatio: 0.45,
-  /** 手腕外翻：最强轴角速度中位 / 另两轴中位 > 该值。正常约 1.1，外翻约 3.7 */
-  axisDominance: 2.0,
   /**
    * 行程不垂直：水平方向加速度 RMS（去掉重力后的横向分量）超过该值，
    * 且**不是**绕单轴拧转（axisDominance 未超门槛）。
@@ -114,6 +112,15 @@ export const THRESHOLDS = {
    * 门槛按**逐次切片**实测定标（每次切片 2~3 秒，与整段统计不可混用）：`n   *   标准组 251 次切片 p10 0.132 / p50 0.178 / p90 0.305`n   *   行程不足 97 次切片 p10 0.091 / p50 0.138 / p90 0.241`n   * 取 0.12（低于标准组 p10），**优先保证不误报**——宁可漏掉部分行程不足，`n   * 也不要把标准动作判成不足。
    */
   minTravelM: 0.10,
+  /**
+   * 外翻判据：前向轴(z)与主旋转轴(y)角速度中位之比**低于**该值。
+   * 实测中位：标准 0.98、外翻 0.30、不垂直 1.15、行程不足 0.89。
+   * 取 0.55：外翻 p90 是 0.54 刚好全收，标准 p10 是 0.66 刚好不碰。
+   * 不垂直要求该值**不低于** 0.55，因此两类在构造上不会同时成立。
+   */
+  forwardOverMain: 0.55,
+  /** 轴占比（诊断保留，判据已改用 forwardOverMain） */
+  axisDominance: 2.0,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {
@@ -196,6 +203,7 @@ function verticalAndTwist(samples: SensorSample[]): {
   verticalRatio: number
   twistRatio: number
   axisDominance: number
+  forwardOverMain: number
   horizontalRms: number
   hvRatio: number
   travel: number
@@ -322,10 +330,27 @@ function verticalAndTwist(samples: SensorSample[]): {
   const otherMedian = (sortedAxes[0] + sortedAxes[1]) / 2
   const axisDominance = otherMedian > 1e-6 ? strongest / otherMedian : 0
 
+  /**
+   * **前向轴（z）与主旋转轴（y）的角速度中位之比** —— 区分「外翻」与「不垂直」的核心量。
+   *
+   * 现场判断：「不垂直理论上会比外翻多一个向前的角速度」。逐次切片实测完全印证：
+   *
+   *   分组      |ωx|    |ωy|    |ωz|    gz/gy
+   *   标准      11.7    10.3     9.7     0.98  (p10 0.66 / p90 1.56)
+   *   手腕外翻   12.4    58.1    15.9     0.30  (p10 0.18 / p90 0.54)  ← gy 暴涨、gz 相对很小
+   *   行程不垂直 15.8    16.3    18.3     1.15  (p10 0.55 / p90 1.74)  ← gz 高于 gy
+   *   行程不足    8.0     8.9     7.2     0.89
+   *
+   * 物理含义：外翻是绕单一轴（y）的猛拧，前向分量相对被压低；
+   * 不垂直则带着明显的向前摆动，z 轴角速度高于 y。这是两者最干净的区分点。
+   */
+  const forwardOverMain = axisMedians[1] > 1e-6 ? axisMedians[2] / axisMedians[1] : 0
+
   return {
     verticalRatio: denom > 0 ? vEnergy / denom : 1,
     twistRatio: totalPath > 0 ? twistPath / totalPath : 0,
     axisDominance,
+    forwardOverMain,
     horizontalRms: Math.sqrt(hEnergy / Math.max(1, samples.length)),
     // 水平/竖直加速度比：「不垂直」的本质是横向运动超过竖直运动，外翻则是两者同时放大
     hvRatio: hEnergy > 0 ? Math.sqrt(hEnergy / Math.max(1, vEnergy)) : 0,
@@ -369,7 +394,7 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   // 竖直：把加速度按重力方向分解，取"沿重力方向的动态能量"占全部动态能量的比例；
   //       标准推举几乎全是竖直运动，占比接近 1；横着甩会明显下降。
   // 外翻：绕重力轴的转动量占转动路径的比例；哑铃被手腕拧动时该值升高。
-  const { verticalRatio, twistRatio, axisDominance, horizontalRms, hvRatio, travel } = verticalAndTwist(samples)
+  const { verticalRatio, twistRatio, axisDominance, forwardOverMain, horizontalRms, hvRatio, travel } = verticalAndTwist(samples)
 
   const codes: ErrorCode[] = []
   // ① 行程不足：主轴峰值低于该动作的 min_peak
@@ -377,11 +402,11 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   // 行程不垂直：水平加速度 RMS 偏高，但要排除「手腕外翻」那种绕单轴拧转（axisDominance > 门槛）
-  if (hvRatio > THRESHOLDS.hvRatio && axisDominance <= THRESHOLDS.axisDominance) {
+  if (hvRatio > THRESHOLDS.hvRatio && forwardOverMain >= THRESHOLDS.forwardOverMain) {
     codes.push('NOT_VERTICAL')
   }
   // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）
-  if (axisDominance > THRESHOLDS.axisDominance) codes.push('WRIST_FLIP')
+  if (forwardOverMain < THRESHOLDS.forwardOverMain) codes.push('WRIST_FLIP')
 
   const hasHigh = codes.some((c) => ERROR_META[c].severity === 'high')
   // 四个维度分**保留为诊断信息**（报告里仍展示，便于解释分数构成），

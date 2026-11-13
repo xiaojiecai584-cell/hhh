@@ -34,6 +34,7 @@ export interface RuleFeatures {
   hvRatio?: number
   forwardOverMain?: number
   attitudeDevDeg?: number
+  forwardDevDeg?: number
   verticalRatio?: number
   twistRatio?: number
 }
@@ -142,6 +143,16 @@ export const THRESHOLDS = {
    * 实测中位：标准 23.2、不垂直 54.3、外翻 100.4。取 40°。
    */
   attitudeDevDeg: 40,
+  /**
+   * 行程不垂直：**朝前方向**的最大角度差（度）超过该值。
+   * 只是"前向"分量，不含侧向——实测比全向偏离的判别力强得多：
+   *   分组     全向偏离 p50   前向角度 p50
+   *   标准        23            16
+   *   不垂直      54            52
+   *   外翻       100            89
+   * 取 35°：不垂直检出 88%、标准误报 6.8%（全向 40° 时是 71% / 12.7%）。
+   */
+  forwardDevDeg: 35,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {
@@ -226,6 +237,7 @@ function verticalAndTwist(samples: SensorSample[]): {
   axisDominance: number
   forwardOverMain: number
   attitudeDevDeg: number
+  forwardDevDeg: number
   horizontalRms: number
   hvRatio: number
   travel: number
@@ -377,6 +389,7 @@ function verticalAndTwist(samples: SensorSample[]): {
    */
   const devLen = dirX.length
   let attitudeDevDeg = 0
+  let forwardDevDeg = 0
   if (devLen >= 8) {
     const k = Math.max(3, Math.round(devLen * 0.15))
     let sx = 0
@@ -395,6 +408,27 @@ function verticalAndTwist(samples: SensorSample[]): {
       const c = Math.max(-1, Math.min(1, dirX[i] * rx + dirY[i] * ry + dirZ[i] * rz))
       const a = (Math.acos(c) * 180) / Math.PI
       if (a > attitudeDevDeg) attitudeDevDeg = a
+    }
+
+    // ---- 前向角度：只看"朝面前"方向的偏离 ----
+    // 前向轴 = 传感器 z 轴在水平面（垂直于起始重力方向）上的投影。
+    // 选 z 是因为实测不垂直动作的 |ωz| 明显偏高（高出 gy），即前向转动占优。
+    const zdot = rz
+    let zhx = -zdot * rx
+    let zhy = -zdot * ry
+    let zhz = 1 - zdot * rz
+    const zhn = Math.hypot(zhx, zhy, zhz) || 1
+    zhx /= zhn
+    zhy /= zhn
+    zhz /= zhn
+    for (let i = k; i < devLen - k; i++) {
+      const ux = dirX[i]
+      const uy = dirY[i]
+      const uz = dirZ[i]
+      const fwd = ux * zhx + uy * zhy + uz * zhz
+      const vert = ux * rx + uy * ry + uz * rz
+      const a = (Math.abs(Math.atan2(fwd, Math.abs(vert))) * 180) / Math.PI
+      if (a > forwardDevDeg) forwardDevDeg = a
     }
   }
   const sortedAxes = [...axisMedians].sort((a, b) => a - b)
@@ -424,6 +458,7 @@ function verticalAndTwist(samples: SensorSample[]): {
     axisDominance,
     forwardOverMain,
     attitudeDevDeg,
+    forwardDevDeg,
     horizontalRms: Math.sqrt(hEnergy / Math.max(1, samples.length)),
     // 水平/竖直加速度比：「不垂直」的本质是横向运动超过竖直运动，外翻则是两者同时放大。
     // ⚠️ 分母**不能**写成 Math.max(1, vEnergy)：vEnergy 是 Σ(a‖−1g)²，单位 g²，
@@ -481,7 +516,7 @@ export function classifyMotion(
   // 竖直：把加速度按重力方向分解，取"沿重力方向的动态能量"占全部动态能量的比例；
   //       标准推举几乎全是竖直运动，占比接近 1；横着甩会明显下降。
   // 外翻：绕重力轴的转动量占转动路径的比例；哑铃被手腕拧动时该值升高。
-  const { verticalRatio, twistRatio, axisDominance, forwardOverMain, attitudeDevDeg, horizontalRms, hvRatio, travel } = verticalAndTwist(samples)
+  const { verticalRatio, twistRatio, axisDominance, forwardOverMain, attitudeDevDeg, forwardDevDeg, horizontalRms, hvRatio, travel } = verticalAndTwist(samples)
 
   const codes: ErrorCode[] = []
   // ① 行程不足：主轴峰值低于该动作的 min_peak
@@ -495,7 +530,7 @@ export function classifyMotion(
   if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   // 行程不垂直：水平加速度 RMS 偏高，但要排除「手腕外翻」那种绕单轴拧转（axisDominance > 门槛）
-  if (attitudeDevDeg > THRESHOLDS.attitudeDevDeg && forwardOverMain >= THRESHOLDS.forwardOverMain) {
+  if (forwardDevDeg > THRESHOLDS.forwardDevDeg && forwardOverMain >= THRESHOLDS.forwardOverMain) {
     codes.push('NOT_VERTICAL')
   }
   // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）
@@ -559,6 +594,7 @@ export function classifyMotion(
       /** 前向轴(z)/主旋转轴(y)角速度比——区分外翻与不垂直 */
       forwardOverMain,
     attitudeDevDeg,
+    forwardDevDeg,
     },
     score: { rangeOfMotion, tempo, stability, consistency, overall: Math.round(overall * 100) / 100, deductions },
     phases: phaseRanges(durationMs),

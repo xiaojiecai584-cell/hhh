@@ -83,6 +83,8 @@ export const THRESHOLDS = {
    * 正例仅 2 个，高度不确认，补数据后必须重估，可能还需换特征。
    */
   twistRatio: 0.45,
+  /** 手腕外翻：最强轴角速度中位 / 另两轴中位 > 该值。正常约 1.1，外翻约 3.7 */
+  axisDominance: 2.0,
   /**
    * 竖直行程下限（米）。低于它判为「行程不足」。
    *
@@ -171,10 +173,13 @@ function stabilityStd(mainAxis: number[]): number {
  * 重力方向用一阶低通估计（τ≈1s，与 repCounter 里同一套做法），
  * 只用到加速度与角速度，不依赖固件姿态解算。
  */
-function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twistRatio: number; travel: number } {
+function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twistRatio: number; axisDominance: number; travel: number } {
   let g: { x: number; y: number; z: number } | null = null
   let vEnergy = 0
   let hEnergy = 0
+  const gxAbs: number[] = []
+  const gyAbs: number[] = []
+  const gzAbs: number[] = []
   let twistPath = 0
   let totalPath = 0
   for (let i = 0; i < samples.length; i++) {
@@ -198,6 +203,10 @@ function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twi
     const wmag = Math.hypot(s.gx, s.gy, s.gz)
     twistPath += Math.abs(s.gx * ux + s.gy * uy + s.gz * uz)
     totalPath += wmag
+    // 逐轴累加角速度绝对值中位数所需的样本（见下方 axisDominance）
+    gxAbs.push(Math.abs(s.gx))
+    gyAbs.push(Math.abs(s.gy))
+    gzAbs.push(Math.abs(s.gz))
   }
   const denom = vEnergy + hEnergy
 
@@ -261,9 +270,36 @@ function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twi
   const q = (p: number) => sx[Math.min(sx.length - 1, Math.floor(p * (sx.length - 1)))] || 0
   const travel = q(0.95) - q(0.05)
 
+  /**
+   * 轴占比（axisDominance）——手腕外翻的判据。
+   *
+   * 现场提示"外翻时应该有一个轴的角速度大幅变动"，标注数据完全印证：
+   *
+   *   分组      |ωx| p50   |ωy| p50   |ωz| p50   轴占比
+   *   标准        11.9       10.6       9.7      ~1.1
+   *   手腕外翻     11.7       50.7      15.5      ~3.7  ← y 轴暴涨 5 倍，x/z 几乎不变
+   *   不垂直       14.7       18.1      19.2      ~1.2
+   *   行程不足      8.1        8.4       6.3      ~1.2
+   *
+   * 判据 = 最强轴的角速度中位 ÷ 另外两轴的中位。
+   * 比之前那个"绕重力轴转动占比"好，因为后者把各轴混在一起、把关键信息平均掉了。
+   * 这个量还是**尺度无关**的：动作做得多猛都不影响，只有真正绕单一轴拧转才会变大。
+   */
+  const med = (arr: number[]): number => {
+    if (!arr.length) return 0
+    const b = [...arr].sort((x, y) => x - y)
+    return b[Math.floor(b.length / 2)]
+  }
+  const axisMedians = [med(gxAbs), med(gyAbs), med(gzAbs)]
+  const sortedAxes = [...axisMedians].sort((a, b) => a - b)
+  const strongest = sortedAxes[2]
+  const otherMedian = (sortedAxes[0] + sortedAxes[1]) / 2
+  const axisDominance = otherMedian > 1e-6 ? strongest / otherMedian : 0
+
   return {
     verticalRatio: denom > 0 ? vEnergy / denom : 1,
     twistRatio: totalPath > 0 ? twistPath / totalPath : 0,
+    axisDominance,
     travel,
   }
 }
@@ -304,7 +340,7 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   // 竖直：把加速度按重力方向分解，取"沿重力方向的动态能量"占全部动态能量的比例；
   //       标准推举几乎全是竖直运动，占比接近 1；横着甩会明显下降。
   // 外翻：绕重力轴的转动量占转动路径的比例；哑铃被手腕拧动时该值升高。
-  const { verticalRatio, twistRatio, travel } = verticalAndTwist(samples)
+  const { verticalRatio, twistRatio, axisDominance, travel } = verticalAndTwist(samples)
 
   const codes: ErrorCode[] = []
   // ① 行程不足：主轴峰值低于该动作的 min_peak
@@ -313,7 +349,7 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   // ② 行程不垂直：竖直方向的运动能量占比过低
   if (verticalRatio < THRESHOLDS.verticalRatio) codes.push('NOT_VERTICAL')
   // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）
-  if (twistRatio < THRESHOLDS.twistRatio) codes.push('WRIST_FLIP')
+  if (axisDominance > THRESHOLDS.axisDominance) codes.push('WRIST_FLIP')
 
   const hasHigh = codes.some((c) => ERROR_META[c].severity === 'high')
   // 四个维度分**保留为诊断信息**（报告里仍展示，便于解释分数构成），

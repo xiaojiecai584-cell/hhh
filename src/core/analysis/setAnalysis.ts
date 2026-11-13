@@ -1,4 +1,4 @@
-import { classifyMotion, ERROR_DEDUCTION, type RuleResult } from './ruleClassifier'
+import { classifyMotion, ERROR_DEDUCTION, travelOf, type RuleResult } from './ruleClassifier'
 import {
   phaseRanges,
   toApiSample,
@@ -57,8 +57,8 @@ export interface SetAnalysis {
 const EMPTY_SCORE: ScoreResult = { overall: 0, rangeOfMotion: 0, tempo: 0, stability: 0, consistency: 0 }
 
 /** 把本地规则结果归一化成与后端一致的形状 */
-function fromLocal(samples: SensorSample[], actionId: number): RepAnalysis {
-  const r: RuleResult = classifyMotion(samples, actionId)
+function fromLocal(samples: SensorSample[], actionId: number, travelRefM = 0): RepAnalysis {
+  const r: RuleResult = classifyMotion(samples, actionId, { travelRefM })
   const durationMs = samples.length ? samples[samples.length - 1].t - samples[0].t : 0
   return {
     index: 0,
@@ -122,6 +122,23 @@ export async function analyzeSet(
 ): Promise<SetAnalysis | null> {
   const analyzable = reps.filter((r) => r.samples.length >= 32)
   if (!analyzable.length) return null
+
+  /**
+   * 「行程不足」改用相对量：先算出本组每一次的竖直行程，取最大值作为参照。
+   *
+   * 为什么需要两遍：绝对行程受个体与负重影响极大，标准组与不足组的分布几乎重叠
+   * （p50 0.178 vs 0.138），任何绝对门槛都无法兼顾。相对量只看"同组内是否明显偏小"。
+   */
+  // ⚠️ 相对行程已停用：实测标准组与行程不足组的行程比分布几乎相同
+  //（中位 0.51 vs 0.54），任何门槛下标准误报都超过 69%，比绝对门槛更差。
+  // 保留计算供将来分析，但不参与判定。
+  let travelRefM = 0
+  if (false && opts.actionId === 1) {
+    for (const r of analyzable) {
+      const t = travelOf(r.samples)
+      if (t > travelRefM) travelRefM = t
+    }
+  }
 
   const baseUrl = (opts.baseUrl ?? '').trim()
   let backendError: string | null = null

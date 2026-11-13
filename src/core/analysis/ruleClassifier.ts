@@ -115,6 +115,17 @@ export const THRESHOLDS = {
    */
   minTravelM: 0.13,
   /**
+   * 行程不足的**相对**门槛：本次竖直行程 ÷ 本组最大行程 低于该值即判不足。
+   *
+   * 为什么改用相对量：绝对行程受个体与负重影响极大——
+   * 标准组 p50 为 0.178、行程不足组 p50 为 0.138，两组分布几乎重叠，
+   * 任何绝对门槛都无法兼顾（实测：门槛 0.10 时只检出 15%，0.13 时检出 44% 但标准组误报 9.2%）。
+   * 相对量消除个体差异，只看"同组内是否明显偏小"。
+   *
+   * 0.78 是初值，待新数据（组内既有足量也有不足的标注）到位后标定。
+   */
+  minTravelRatio: 0.78,
+  /**
    * 外翻判据：前向轴(z)与主旋转轴(y)角速度中位之比**低于**该值。
    * 实测中位：标准 0.98、外翻 0.30、不垂直 1.15、行程不足 0.89。
    * 取 0.55：外翻 p90 是 0.54 刚好全收，标准 p10 是 0.66 刚好不碰。
@@ -364,7 +375,16 @@ function verticalAndTwist(samples: SensorSample[]): {
   }
 }
 
-export function classifyMotion(samples: SensorSample[], actionId: number): RuleResult {
+/** 单个切片的竖直行程（米），供「相对行程」判据取本组参照 */
+export function travelOf(samples: SensorSample[]): number {
+  return verticalAndTwist(samples).travel
+}
+
+export function classifyMotion(
+  samples: SensorSample[],
+  actionId: number,
+  opts?: { travelRefM?: number },
+): RuleResult {
   const signalQuality = assessQuality(samples)
   const rule = ACTION_RULES[actionId] ?? { axis: 'gy' as const, minPeak: 38, name: 'unknown' }
 
@@ -404,8 +424,13 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
 
   const codes: ErrorCode[] = []
   // ① 行程不足：主轴峰值低于该动作的 min_peak
-  // 行程不足改用竖直行程判定（角度峰值与行程无关，实测两组重叠）
-  if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
+  // 行程不足：优先用**相对本组最大行程**判定；没有参照时退回绝对门槛。
+  // 绝对门槛受个体与重量影响极大（标准组 p50 0.178 与不足组 p50 0.138 几乎重叠），
+  // 相对量只看"同组内是否明显偏小"，能消除个体差异。
+  const travelRef = opts?.travelRefM ?? 0
+  const travelLow =
+    travelRef > 0 ? travel < travelRef * THRESHOLDS.minTravelRatio : travel < THRESHOLDS.minTravelM
+  if (travelLow) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   // 行程不垂直：水平加速度 RMS 偏高，但要排除「手腕外翻」那种绕单轴拧转（axisDominance > 门槛）
   if (hvRatio > THRESHOLDS.hvRatio && forwardOverMain >= THRESHOLDS.forwardOverMain) {

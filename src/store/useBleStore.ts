@@ -210,6 +210,8 @@ let sampleRing: SensorSample[] = []
 let travelRing: SensorSample[] = []
 /** 位移计数重算的节流时间戳 */
 let lastTravelT = 0
+/** 组内已提交的峰值计数（只增不减，避免实时数字跳变） */
+let peakCountCommitted = 0
 const SAMPLE_RING_MAX = 1000
 /** 本次运行的组号与开始时间；结束一组时用它做历史记录 id，重复保存不会产生重复条目 */
 let setId = ''
@@ -261,7 +263,12 @@ function attach(t: BLETransport) {
             const aid = useBleStore.getState().currentActionId ?? 1
             if (aid === 1 && travelRing.length >= 64) {
               const n = countTravelCycles(travelRing)
-              if (n > 0) {
+              // **组内只增不减**：突出度门槛依赖缓冲区的 p10~p90 跨度，
+              // 缓冲区每增长一点门槛就微调，个别峰会在门槛边缘进进出出，
+              // 表现为数字"跳上去又掉回来"。次数本来就不该往回走，故只接受上升。
+              // 组结束时用一次完整重算作为权威结果（见 sendStopAction）。
+              if (n > peakCountCommitted) {
+                peakCountCommitted = n
                 useBleStore.setState({ repCount: n })
                 if (!autoStopping && targetRepsFlag > 0 && n >= targetRepsFlag) {
                   autoStopping = true
@@ -402,6 +409,7 @@ export const useBleStore = create<BleState>((set) => ({
     // 位移周期计数用整组缓冲，必须在新一组开始时清空，否则会累积上一组
     travelRing = []
     lastTravelT = 0
+    peakCountCommitted = 0
     autoStopping = false
     setId = `set-${Date.now().toString(36)}`
     setStartedAt = Date.now()
@@ -441,6 +449,7 @@ export const useBleStore = create<BleState>((set) => ({
       sampleRing = []
       travelRing = []
       lastTravelT = 0
+      peakCountCommitted = 0
       autoStopping = false
       setId = `set-${Date.now().toString(36)}`
       setStartedAt = Date.now()
@@ -500,6 +509,9 @@ export const useBleStore = create<BleState>((set) => ({
         if (actionId === 1 && travelRing.length >= 64) {
           const cyc = detectTravelCycles(travelRing)
           if (cyc.length > 0) {
+            // 组结束时以这次完整重算为**权威次数**，保证大数字与逐次明细永远一致
+            // （实时显示做了"只增不减"，可能比最终值略高，这里统一校正）
+            useBleStore.setState({ repCount: cyc.length })
             const t0 = travelRing[0].t
             const t1 = travelRing[travelRing.length - 1].t
             return cyc.map((c, i) => {

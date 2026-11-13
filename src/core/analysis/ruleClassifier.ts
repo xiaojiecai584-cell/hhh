@@ -596,11 +596,13 @@ export function classifyMotion(
   if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   // 行程不垂直：水平加速度 RMS 偏高，但要排除「手腕外翻」那种绕单轴拧转（axisDominance > 门槛）
-  if (xzTiltDevDeg > THRESHOLDS.xzTiltDevDeg && forwardOverMain >= THRESHOLDS.forwardOverMain) {
+  if (xzTiltDevDeg > THRESHOLDS.xzTiltDevDeg && axisDominance <= THRESHOLDS.axisDominance) {
     codes.push('NOT_VERTICAL')
   }
   // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）
-  if (forwardOverMain < THRESHOLDS.forwardOverMain) codes.push('WRIST_FLIP')
+  // 外翻用「轴占比」判定：一个轴的角速度暴涨 5 倍（|ωy| 58.1 vs 标准 10.3）
+  // ——这是外翻最明显、最直接的特征。与非垂直用同一个量，两类天然互斥。
+  if (axisDominance > THRESHOLDS.axisDominance) codes.push('WRIST_FLIP')
 
   const hasHigh = codes.some((c) => ERROR_META[c].severity === 'high')
   // 四个维度分**保留为诊断信息**（报告里仍展示，便于解释分数构成），

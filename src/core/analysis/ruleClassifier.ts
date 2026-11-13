@@ -152,7 +152,7 @@ export const THRESHOLDS = {
    *   外翻       100            89
    * 取 35°：不垂直检出 88%、标准误报 6.8%（全向 40° 时是 71% / 12.7%）。
    */
-  forwardDevDeg: 30,
+  forwardDevDeg: 25,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {

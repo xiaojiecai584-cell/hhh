@@ -35,6 +35,7 @@ export interface RuleFeatures {
   forwardOverMain?: number
   attitudeDevDeg?: number
   forwardDevDeg?: number
+  xzTiltDevDeg?: number
   verticalRatio?: number
   twistRatio?: number
 }
@@ -153,6 +154,11 @@ export const THRESHOLDS = {
    * 取 35°：不垂直检出 88%、标准误报 6.8%（全向 40° 时是 71% / 12.7%）。
    */
   forwardDevDeg: 25,
+  /**
+   * 行程不垂直：**X-Z 平面倾角偏差**（相对静止基准的姿态偏离）超过该值（度），
+   * 且偏差需持续 100ms。实测 24° 时检出 80%、标准误报 8.4%。
+   */
+  xzTiltDevDeg: 24,
 } as const
 
 const ERROR_META: Record<ErrorCode, { severity: Severity; confidence: number; phase: Phase | null }> = {
@@ -238,6 +244,7 @@ function verticalAndTwist(samples: SensorSample[]): {
   forwardOverMain: number
   attitudeDevDeg: number
   forwardDevDeg: number
+  xzTiltDevDeg: number
   horizontalRms: number
   hvRatio: number
   travel: number
@@ -387,6 +394,64 @@ function verticalAndTwist(samples: SensorSample[]): {
    * （标准 5.4°、不垂直 7.4°），因为推举做完哑铃会回到原姿态——
    * 真正有用的是"过程中的最大偏离"，不是"起止差"。
    */
+  /**
+   * **X-Z 平面倾角偏差**（度）——借鉴设备端 judge.c 的思路，现作为「行程不垂直」的主判据。
+   *
+   * 与之前"3D 前向投影"的区别在于：
+   *   1) 角度定义用 atan2(az, ax) —— 只取 X-Z 平面内的倾角，物理上是"前后倾"；
+   *   2) 基准取**静止样本**（|gyro|<10°/s 且 |a|∈[0.9,1.1]g）的均值，
+   *      比"取前 15% 样本"更稳（前 15% 可能已经包含运动）；
+   *      静止样本不足 5 个时退回前 15%；
+   *   3) 偏差需**持续 100ms**（文档的 TILT_CONFIRM_MS）才算数，
+   *      单点尖峰不计入——实测这一步把标准动作误报从 14.3% 压到 8.4%。
+   *
+   * 实测（逐次切片，中位）：标准 16.5°、不垂直 51.5°、外翻 97.9°。
+   * 门槛 24°：不垂直检出 80%、标准误报 8.4%。
+   *
+   * 注意：文档称"绕 X/Z 的翻转不改变 X-Z 夹角"，但在**本项目的安装方式下不成立**——
+   * 外翻同样 100% 触发该判据，因此仍必须叠加 forwardOverMain 门把外翻排除。
+   */
+  let xzTiltDevDeg = 0
+  if (n2 >= 8) {
+    const dtSec = samples.length > 1 ? (samples[samples.length - 1].t - samples[0].t) / 1000 / (samples.length - 1) : 0.02
+    let bx = 0
+    let bz = 0
+    let cntStatic = 0
+    for (const s of samples) {
+      const gm = Math.hypot(s.gx, s.gy, s.gz)
+      const am = Math.hypot(s.ax, s.ay, s.az)
+      if (gm < 10 && Math.abs(am - 1) < 0.1) {
+        bx += s.ax
+        bz += s.az
+        cntStatic++
+      }
+    }
+    let baseAngle: number
+    if (cntStatic >= 5) {
+      baseAngle = Math.atan2(bz / cntStatic, bx / cntStatic)
+    } else {
+      const k = Math.max(5, Math.round(n2 * 0.15))
+      let sx2 = 0
+      let sz2 = 0
+      for (let i = 0; i < k && i < n2; i++) {
+        sx2 += samples[i].ax
+        sz2 += samples[i].az
+      }
+      baseAngle = Math.atan2(sz2, sx2)
+    }
+    const dev = samples.map((s) => {
+      let d = Math.abs(Math.atan2(s.az, s.ax) - baseAngle) * (180 / Math.PI)
+      if (d > 180) d = 360 - d
+      return d
+    })
+    const win = Math.max(1, Math.round(0.1 / Math.max(dtSec, 1e-3)))
+    for (let i = 0; i + win <= dev.length; i++) {
+      let sum = 0
+      for (let k = 0; k < win; k++) sum += dev[i + k]
+      const m = sum / win
+      if (m > xzTiltDevDeg) xzTiltDevDeg = m
+    }
+  }
   const devLen = dirX.length
   let attitudeDevDeg = 0
   let forwardDevDeg = 0
@@ -459,6 +524,7 @@ function verticalAndTwist(samples: SensorSample[]): {
     forwardOverMain,
     attitudeDevDeg,
     forwardDevDeg,
+    xzTiltDevDeg,
     horizontalRms: Math.sqrt(hEnergy / Math.max(1, samples.length)),
     // 水平/竖直加速度比：「不垂直」的本质是横向运动超过竖直运动，外翻则是两者同时放大。
     // ⚠️ 分母**不能**写成 Math.max(1, vEnergy)：vEnergy 是 Σ(a‖−1g)²，单位 g²，
@@ -516,7 +582,7 @@ export function classifyMotion(
   // 竖直：把加速度按重力方向分解，取"沿重力方向的动态能量"占全部动态能量的比例；
   //       标准推举几乎全是竖直运动，占比接近 1；横着甩会明显下降。
   // 外翻：绕重力轴的转动量占转动路径的比例；哑铃被手腕拧动时该值升高。
-  const { verticalRatio, twistRatio, axisDominance, forwardOverMain, attitudeDevDeg, forwardDevDeg, horizontalRms, hvRatio, travel } = verticalAndTwist(samples)
+  const { verticalRatio, twistRatio, axisDominance, forwardOverMain, attitudeDevDeg, forwardDevDeg, xzTiltDevDeg, horizontalRms, hvRatio, travel } = verticalAndTwist(samples)
 
   const codes: ErrorCode[] = []
   // ① 行程不足：主轴峰值低于该动作的 min_peak
@@ -530,7 +596,7 @@ export function classifyMotion(
   if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   // 行程不垂直：水平加速度 RMS 偏高，但要排除「手腕外翻」那种绕单轴拧转（axisDominance > 门槛）
-  if (forwardDevDeg > THRESHOLDS.forwardDevDeg && forwardOverMain >= THRESHOLDS.forwardOverMain) {
+  if (xzTiltDevDeg > THRESHOLDS.xzTiltDevDeg && forwardOverMain >= THRESHOLDS.forwardOverMain) {
     codes.push('NOT_VERTICAL')
   }
   // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）
@@ -595,6 +661,7 @@ export function classifyMotion(
       forwardOverMain,
     attitudeDevDeg,
     forwardDevDeg,
+    xzTiltDevDeg,
     },
     score: { rangeOfMotion, tempo, stability, consistency, overall: Math.round(overall * 100) / 100, deductions },
     phases: phaseRanges(durationMs),

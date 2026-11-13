@@ -95,6 +95,16 @@ export const THRESHOLDS = {
    */
   horizontalRms: 0.28,
   /**
+   * 行程不垂直：水平/竖直加速度的 RMS 比超过该值，且**不是**绕单轴拧转。
+   *
+   * 为什么不用单一的水平加速度：外翻时水平加速度（0.543g）比不垂直（0.322g）更高，
+   * 单看它会混淆两类。而两者的**比值**才是判别关键——
+   *   标准 1.28、外翻 1.58、不垂直 2.04（逐次切片中位）。
+   * 「不垂直」的本质是横向运动超过竖直运动；外翻是两者同时放大但比例接近正常。
+   * 叠加 axisDominance 条件可把外翻彻底排除（外翻 dom≈3.7，不垂直≈1.34）。
+   */
+  hvRatio: 2.0,
+  /**
    * 竖直行程下限（米）。低于它判为「行程不足」。
    *
    * 为什么改用行程而不是主轴角速度峰值：实测「行程不足」组与标准组的
@@ -187,6 +197,7 @@ function verticalAndTwist(samples: SensorSample[]): {
   twistRatio: number
   axisDominance: number
   horizontalRms: number
+  hvRatio: number
   travel: number
 } {
   let g: { x: number; y: number; z: number } | null = null
@@ -316,6 +327,8 @@ function verticalAndTwist(samples: SensorSample[]): {
     twistRatio: totalPath > 0 ? twistPath / totalPath : 0,
     axisDominance,
     horizontalRms: Math.sqrt(hEnergy / Math.max(1, samples.length)),
+    // 水平/竖直加速度比：「不垂直」的本质是横向运动超过竖直运动，外翻则是两者同时放大
+    hvRatio: hEnergy > 0 ? Math.sqrt(hEnergy / Math.max(1, vEnergy)) : 0,
     travel,
   }
 }
@@ -356,7 +369,7 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   // 竖直：把加速度按重力方向分解，取"沿重力方向的动态能量"占全部动态能量的比例；
   //       标准推举几乎全是竖直运动，占比接近 1；横着甩会明显下降。
   // 外翻：绕重力轴的转动量占转动路径的比例；哑铃被手腕拧动时该值升高。
-  const { verticalRatio, twistRatio, axisDominance, horizontalRms, travel } = verticalAndTwist(samples)
+  const { verticalRatio, twistRatio, axisDominance, horizontalRms, hvRatio, travel } = verticalAndTwist(samples)
 
   const codes: ErrorCode[] = []
   // ① 行程不足：主轴峰值低于该动作的 min_peak
@@ -364,7 +377,7 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   // 行程不垂直：水平加速度 RMS 偏高，但要排除「手腕外翻」那种绕单轴拧转（axisDominance > 门槛）
-  if (horizontalRms > THRESHOLDS.horizontalRms && axisDominance <= THRESHOLDS.axisDominance) {
+  if (hvRatio > THRESHOLDS.hvRatio && axisDominance <= THRESHOLDS.axisDominance) {
     codes.push('NOT_VERTICAL')
   }
   // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）

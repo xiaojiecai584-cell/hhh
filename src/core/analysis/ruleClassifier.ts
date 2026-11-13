@@ -352,8 +352,12 @@ function verticalAndTwist(samples: SensorSample[]): {
     axisDominance,
     forwardOverMain,
     horizontalRms: Math.sqrt(hEnergy / Math.max(1, samples.length)),
-    // 水平/竖直加速度比：「不垂直」的本质是横向运动超过竖直运动，外翻则是两者同时放大
-    hvRatio: hEnergy > 0 ? Math.sqrt(hEnergy / Math.max(1, vEnergy)) : 0,
+    // 水平/竖直加速度比：「不垂直」的本质是横向运动超过竖直运动，外翻则是两者同时放大。
+    // ⚠️ 分母**不能**写成 Math.max(1, vEnergy)：vEnergy 是 Σ(a‖−1g)²，单位 g²，
+    // 逐次切片（2~3 秒、约 150 点）时典型值就在 1 附近甚至更小，
+    // 钳到 1 会把真实的比值压低一半以上，导致「不垂直」大量漏检
+    // （实测：解析扫描 64% vs 代码实测 39%，差 25 个百分点就是这个钳制造成的）。
+    hvRatio: vEnergy > 1e-9 ? Math.sqrt(hEnergy / vEnergy) : 0,
     travel,
   }
 }

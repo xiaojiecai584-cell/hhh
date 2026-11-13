@@ -30,6 +30,8 @@ export interface RuleFeatures {
   verticalTravelM?: number
   axisDominance?: number
   horizontalRms?: number
+  hvRatio?: number
+  forwardOverMain?: number
   verticalRatio?: number
   twistRatio?: number
 }
@@ -101,7 +103,7 @@ export const THRESHOLDS = {
    * 「不垂直」的本质是横向运动超过竖直运动；外翻是两者同时放大但比例接近正常。
    * 叠加 axisDominance 条件可把外翻彻底排除（外翻 dom≈3.7，不垂直≈1.34）。
    */
-  hvRatio: 1.9,
+  hvRatio: 1.7,
   /**
    * 竖直行程下限（米）。低于它判为「行程不足」。
    *
@@ -463,6 +465,10 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
       axisDominance,
       /** 水平方向加速度 RMS（g）——行程不垂直判据 */
       horizontalRms,
+      /** 水平/竖直加速度比——行程不垂直的主判据（暴露出来便于数值对拍） */
+      hvRatio,
+      /** 前向轴(z)/主旋转轴(y)角速度比——区分外翻与不垂直 */
+      forwardOverMain,
     },
     score: { rangeOfMotion, tempo, stability, consistency, overall: Math.round(overall * 100) / 100, deductions },
     phases: phaseRanges(durationMs),

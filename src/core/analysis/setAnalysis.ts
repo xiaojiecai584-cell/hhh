@@ -133,7 +133,7 @@ export async function analyzeSet(
   //（中位 0.51 vs 0.54），任何门槛下标准误报都超过 69%，比绝对门槛更差。
   // 保留计算供将来分析，但不参与判定。
   let travelRefM = 0
-  if (false && opts.actionId === 1) {
+  if (opts.actionId === 1) {
     for (const r of analyzable) {
       const t = travelOf(r.samples)
       if (t > travelRefM) travelRefM = t
@@ -163,7 +163,7 @@ export async function analyzeSet(
         backendError = e instanceof MotionAiUnavailable ? e.message : String(e)
       }
     }
-    if (!analysis) analysis = fromLocal(rep.samples, opts.actionId)
+    if (!analysis) analysis = fromLocal(rep.samples, opts.actionId, travelRefM)
     analysis.index = rep.index
     out.push(analysis)
     opts.onProgress?.(i + 1, analyzable.length)

@@ -28,6 +28,7 @@ export interface RuleFeatures {
   topDurationMs: number
   endpointAngularVelocity: number
   verticalTravelM?: number
+  travelRefM?: number
   axisDominance?: number
   horizontalRms?: number
   hvRatio?: number
@@ -220,6 +221,7 @@ function verticalAndTwist(samples: SensorSample[]): {
   horizontalRms: number
   hvRatio: number
   travel: number
+  travelRefM: number
 } {
   let g: { x: number; y: number; z: number } | null = null
   let vEnergy = 0
@@ -372,6 +374,7 @@ function verticalAndTwist(samples: SensorSample[]): {
     // （实测：解析扫描 64% vs 代码实测 39%，差 25 个百分点就是这个钳制造成的）。
     hvRatio: vEnergy > 1e-9 ? Math.sqrt(hEnergy / vEnergy) : 0,
     travel,
+    travelRefM: 0,
   }
 }
 
@@ -428,9 +431,10 @@ export function classifyMotion(
   // 绝对门槛受个体与重量影响极大（标准组 p50 0.178 与不足组 p50 0.138 几乎重叠），
   // 相对量只看"同组内是否明显偏小"，能消除个体差异。
   const travelRef = opts?.travelRefM ?? 0
-  const travelLow =
-    travelRef > 0 ? travel < travelRef * THRESHOLDS.minTravelRatio : travel < THRESHOLDS.minTravelM
-  if (travelLow) codes.push('INSUFFICIENT_RANGE')
+  // 判定**只用绝对门槛**。本组最大行程（travelRef）仅作为参考量暴露给报告，
+  // 不参与判定——实测把它并进判据后，标准动作误报从 9.2% 涨到 86.9%（相对量），
+  // 或并成"且"时精度从 0.64 掉到 0.32，两种组合都更差。
+  if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
   // 行程不垂直：水平加速度 RMS 偏高，但要排除「手腕外翻」那种绕单轴拧转（axisDominance > 门槛）
   if (hvRatio > THRESHOLDS.hvRatio && forwardOverMain >= THRESHOLDS.forwardOverMain) {
@@ -482,6 +486,8 @@ export function classifyMotion(
       endpointAngularVelocity: endpoint,
       /** 竖直行程（米）——行程不足的判据，也便于标定时取分布 */
       verticalTravelM: travel,
+      /** 本组最大行程参照（米）；0 表示未提供，仅用于展示相对幅度 */
+      travelRefM: travelRef,
       /** 竖直方向动态能量占比 */
       verticalRatio,
       /** 绕重力轴转动占转动路径的比例（保留作诊断，判据已改用 axisDominance） */

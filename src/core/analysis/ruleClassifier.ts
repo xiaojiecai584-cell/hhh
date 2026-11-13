@@ -28,6 +28,8 @@ export interface RuleFeatures {
   topDurationMs: number
   endpointAngularVelocity: number
   verticalTravelM?: number
+  axisDominance?: number
+  horizontalRms?: number
   verticalRatio?: number
   twistRatio?: number
 }
@@ -85,6 +87,13 @@ export const THRESHOLDS = {
   twistRatio: 0.45,
   /** 手腕外翻：最强轴角速度中位 / 另两轴中位 > 该值。正常约 1.1，外翻约 3.7 */
   axisDominance: 2.0,
+  /**
+   * 行程不垂直：水平方向加速度 RMS（去掉重力后的横向分量）超过该值，
+   * 且**不是**绕单轴拧转（axisDominance 未超门槛）。
+   * 实测中位：标准 0.181、不垂直 0.336、外翻 0.540、行程不足 0.154（单位 g）。
+   * 外翻的横向能量同样很高，故必须叠加 axisDominance 条件把两者分开。
+   */
+  horizontalRms: 0.28,
   /**
    * 竖直行程下限（米）。低于它判为「行程不足」。
    *
@@ -173,7 +182,13 @@ function stabilityStd(mainAxis: number[]): number {
  * 重力方向用一阶低通估计（τ≈1s，与 repCounter 里同一套做法），
  * 只用到加速度与角速度，不依赖固件姿态解算。
  */
-function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twistRatio: number; axisDominance: number; travel: number } {
+function verticalAndTwist(samples: SensorSample[]): {
+  verticalRatio: number
+  twistRatio: number
+  axisDominance: number
+  horizontalRms: number
+  travel: number
+} {
   let g: { x: number; y: number; z: number } | null = null
   let vEnergy = 0
   let hEnergy = 0
@@ -300,6 +315,7 @@ function verticalAndTwist(samples: SensorSample[]): { verticalRatio: number; twi
     verticalRatio: denom > 0 ? vEnergy / denom : 1,
     twistRatio: totalPath > 0 ? twistPath / totalPath : 0,
     axisDominance,
+    horizontalRms: Math.sqrt(hEnergy / Math.max(1, samples.length)),
     travel,
   }
 }
@@ -340,14 +356,17 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
   // 竖直：把加速度按重力方向分解，取"沿重力方向的动态能量"占全部动态能量的比例；
   //       标准推举几乎全是竖直运动，占比接近 1；横着甩会明显下降。
   // 外翻：绕重力轴的转动量占转动路径的比例；哑铃被手腕拧动时该值升高。
-  const { verticalRatio, twistRatio, axisDominance, travel } = verticalAndTwist(samples)
+  const { verticalRatio, twistRatio, axisDominance, horizontalRms, travel } = verticalAndTwist(samples)
 
   const codes: ErrorCode[] = []
   // ① 行程不足：主轴峰值低于该动作的 min_peak
   // 行程不足改用竖直行程判定（角度峰值与行程无关，实测两组重叠）
   if (travel < THRESHOLDS.minTravelM) codes.push('INSUFFICIENT_RANGE')
   // ② 行程不垂直：竖直方向的运动能量占比过低
-  if (verticalRatio < THRESHOLDS.verticalRatio) codes.push('NOT_VERTICAL')
+  // 行程不垂直：水平加速度 RMS 偏高，但要排除「手腕外翻」那种绕单轴拧转（axisDominance > 门槛）
+  if (horizontalRms > THRESHOLDS.horizontalRms && axisDominance <= THRESHOLDS.axisDominance) {
+    codes.push('NOT_VERTICAL')
+  }
   // ③ 手腕外翻：绕重力轴的转动占比 **低于** 门槛（方向与直觉相反，见 THRESHOLDS.twistRatio 注释）
   if (axisDominance > THRESHOLDS.axisDominance) codes.push('WRIST_FLIP')
 
@@ -396,8 +415,12 @@ export function classifyMotion(samples: SensorSample[], actionId: number): RuleR
       verticalTravelM: travel,
       /** 竖直方向动态能量占比 */
       verticalRatio,
-      /** 绕重力轴转动占转动路径的比例 */
+      /** 绕重力轴转动占转动路径的比例（保留作诊断，判据已改用 axisDominance） */
       twistRatio,
+      /** 最强轴角速度中位 ÷ 另两轴中位——手腕外翻判据 */
+      axisDominance,
+      /** 水平方向加速度 RMS（g）——行程不垂直判据 */
+      horizontalRms,
     },
     score: { rangeOfMotion, tempo, stability, consistency, overall: Math.round(overall * 100) / 100, deductions },
     phases: phaseRanges(durationMs),
